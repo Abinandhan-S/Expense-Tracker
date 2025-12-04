@@ -163,7 +163,13 @@ class _MainShellState extends State<MainShell> {
       ),
       OverviewPage(
         selectedMonth: selectedMonth,
-        onMonthSelected: _setSelectedMonth,
+        onMonthSelected: (dt) {
+          setState(() {
+            selectedMonth = dt;
+            _selectedIndex = 0; // 🔥 switch to Monthly tab
+          });
+        },
+
       ),
       const CommonExpensePage(),
     ];
