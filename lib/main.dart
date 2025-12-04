@@ -7,29 +7,30 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 
+// =============================================================
+// MAIN INITIALIZATION
+// =============================================================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Hive.initFlutter();
 
-  // Register adapters
   Hive.registerAdapter(ExpenseAdapter());
   Hive.registerAdapter(EarningAdapter());
+  Hive.registerAdapter(CommonExpenseAdapter());
 
-  // Open boxes
   await Hive.openBox<Expense>('expenses_box');
   await Hive.openBox<Earning>('earnings_box');
-
-  // Settings box for recurring salary storage
+  await Hive.openBox<CommonExpense>('common_expenses_box');
   await Hive.openBox('settings');
 
-  // Ensure recurring salary entries for missed months are added at startup
   await ensureRecurringSalaryFilled();
 
   runApp(const ExpenseTrackerApp());
 }
 
-/// Ensure recurring salary entries are inserted for months between
-/// last_added and now (inclusive), if enabled. Uses simple 'settings' box.
+// =============================================================
+// HELPER: RECURRING SALARY
+// =============================================================
 Future<void> ensureRecurringSalaryFilled() async {
   final settings = Hive.box('settings');
   final enabled =
@@ -42,7 +43,6 @@ Future<void> ensureRecurringSalaryFilled() async {
   if (!enabled || amount <= 0) return;
 
   DateTime now = DateTime.now();
-  // parse lastAddedStr as yyyy-MM
   DateTime lastAdded;
   if (lastAddedStr.isEmpty) {
     lastAdded = DateTime(1970, 1);
@@ -51,11 +51,9 @@ Future<void> ensureRecurringSalaryFilled() async {
     lastAdded = DateTime(int.parse(parts[0]), int.parse(parts[1]));
   }
 
-  // Add for each month after lastAdded up to current month (inclusive)
   DateTime cursor = DateTime(lastAdded.year, lastAdded.month + 1);
   final earningsBox = Hive.box<Earning>('earnings_box');
   while (!isSameMonthOrAfter(cursor, now.add(const Duration(days: 1)))) {
-    // Check if salary earning already exists for this year-month
     final exists = earningsBox.values.any(
       (e) =>
           e.source == 'Salary' &&
@@ -92,7 +90,9 @@ bool isSameMonthOrAfter(DateTime a, DateTime b) {
   return false;
 }
 
-/// ===== APP START =====
+// =============================================================
+// MAIN APP SHELL
+// =============================================================
 class ExpenseTrackerApp extends StatefulWidget {
   const ExpenseTrackerApp({super.key});
   @override
@@ -129,7 +129,9 @@ class _ExpenseTrackerAppState extends State<ExpenseTrackerApp> {
   }
 }
 
-/// Main shell with bottom navigation
+// =============================================================
+// MAIN NAVIGATION SHELL
+// =============================================================
 class MainShell extends StatefulWidget {
   final Function(bool) onToggleTheme;
   final ThemeMode themeMode;
@@ -138,7 +140,6 @@ class MainShell extends StatefulWidget {
     required this.onToggleTheme,
     required this.themeMode,
   });
-
   @override
   State<MainShell> createState() => _MainShellState();
 }
@@ -147,15 +148,9 @@ class _MainShellState extends State<MainShell> {
   int _selectedIndex = 0;
   DateTime selectedMonth = DateTime.now();
 
-  void _onItemTapped(int idx) {
-    setState(() => _selectedIndex = idx);
-  }
-
-  void _setSelectedMonth(DateTime month) {
-    setState(() => selectedMonth = DateTime(month.year, month.month));
-    // switch to Monthly tab
-    setState(() => _selectedIndex = 0);
-  }
+  void _onItemTapped(int idx) => setState(() => _selectedIndex = idx);
+  void _setSelectedMonth(DateTime month) =>
+      setState(() => selectedMonth = DateTime(month.year, month.month));
 
   @override
   Widget build(BuildContext context) {
@@ -170,6 +165,7 @@ class _MainShellState extends State<MainShell> {
         selectedMonth: selectedMonth,
         onMonthSelected: _setSelectedMonth,
       ),
+      const CommonExpensePage(),
     ];
 
     return Scaffold(
@@ -186,13 +182,289 @@ class _MainShellState extends State<MainShell> {
             icon: Icon(Icons.dashboard),
             label: 'Overview',
           ),
+          BottomNavigationBarItem(icon: Icon(Icons.group), label: 'Common'),
         ],
       ),
     );
   }
 }
 
-/// ===== MODELS & ADAPTERS =====
+// =============================================================
+// COMMON EXPENSE MODEL + PAGE
+// =============================================================
+class CommonExpense extends HiveObject {
+  CommonExpense({
+    required this.id,
+    required this.title,
+    required this.amount,
+    required this.category,
+    required this.note,
+  });
+
+  String id;
+  String title;
+  double amount;
+  String category;
+  String note;
+}
+
+class CommonExpenseAdapter extends TypeAdapter<CommonExpense> {
+  @override
+  final int typeId = 99;
+  @override
+  CommonExpense read(BinaryReader reader) {
+    return CommonExpense(
+      id: reader.readString(),
+      title: reader.readString(),
+      amount: reader.readDouble(),
+      category: reader.readString(),
+      note: reader.readString(),
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, CommonExpense obj) {
+    writer.writeString(obj.id);
+    writer.writeString(obj.title);
+    writer.writeDouble(obj.amount);
+    writer.writeString(obj.category);
+    writer.writeString(obj.note);
+  }
+}
+
+class CommonExpensePage extends StatefulWidget {
+  const CommonExpensePage({super.key});
+  @override
+  State<CommonExpensePage> createState() => _CommonExpensePageState();
+}
+
+class _CommonExpensePageState extends State<CommonExpensePage> {
+  final Box<CommonExpense> commonBox = Hive.box<CommonExpense>(
+    'common_expenses_box',
+  );
+
+  void openAddEdit({CommonExpense? item}) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+        child: AddCommonExpenseSheet(
+          item: item,
+          onSaved: () => setState(() {}),
+        ),
+      ),
+    );
+  }
+
+  double get total => commonBox.values.fold(0.0, (s, e) => s + e.amount);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Common Expenses')),
+      body: ValueListenableBuilder(
+        valueListenable: commonBox.listenable(),
+        builder: (context, Box<CommonExpense> box, _) {
+          final items = box.values.toList();
+          if (items.isEmpty) {
+            return const Center(child: Text("No common expenses yet"));
+          }
+          return ListView(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  'Total: ₹${total.toStringAsFixed(2)}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+              ),
+              ...items.map(
+                (e) => Card(
+                  margin: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  child: ListTile(
+                    leading: const Icon(Icons.repeat),
+                    title: Text(e.title),
+                    subtitle: Text('${e.category} • ${e.note}'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('₹${e.amount.toStringAsFixed(2)}'),
+                        IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          onPressed: () async {
+                            await e.delete();
+                            setState(() {});
+                          },
+                        ),
+                      ],
+                    ),
+                    onTap: () => openAddEdit(item: e),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 80),
+            ],
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => openAddEdit(),
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+
+// =============================================================
+// CONSTANTS & MODELS
+// =============================================================
+const List<String> defaultCategories = [
+  'Food',
+  'Travel',
+  'Shopping',
+  'Bills',
+  'Fuel',
+  'Rent',
+  'Life',
+  'Others',
+];
+
+const Map<String, IconData> categoryIcons = {
+  'Food': Icons.restaurant,
+  'Travel': Icons.flight,
+  'Shopping': Icons.shopping_cart,
+  'Bills': Icons.receipt_long,
+  'Fuel': Icons.local_gas_station,
+  'Rent': Icons.home,
+  'Life': Icons.favorite,
+  'Others': Icons.more_horiz,
+};
+
+const Map<String, Color> categoryColors = {
+  'Food': Colors.orange,
+  'Travel': Colors.blue,
+  'Shopping': Colors.purple,
+  'Bills': Colors.grey,
+  'Fuel': Colors.red,
+  'Rent': Colors.teal,
+  'Life': Colors.pink,
+  'Others': Colors.green,
+};
+
+class AddCommonExpenseSheet extends StatefulWidget {
+  final CommonExpense? item;
+  final VoidCallback onSaved;
+  const AddCommonExpenseSheet({super.key, this.item, required this.onSaved});
+
+  @override
+  State<AddCommonExpenseSheet> createState() => _AddCommonExpenseSheetState();
+}
+
+class _AddCommonExpenseSheetState extends State<AddCommonExpenseSheet> {
+  final _formKey = GlobalKey<FormState>();
+  late String title;
+  late double amount;
+  late String category;
+  late String note;
+
+  @override
+  void initState() {
+    super.initState();
+    title = widget.item?.title ?? '';
+    amount = widget.item?.amount ?? 0;
+    category = widget.item?.category ?? defaultCategories.first;
+    note = widget.item?.note ?? '';
+  }
+
+  void save() {
+    if (!_formKey.currentState!.validate()) return;
+    _formKey.currentState!.save();
+    final box = Hive.box<CommonExpense>('common_expenses_box');
+    if (widget.item != null) {
+      final e = widget.item!;
+      e.title = title;
+      e.amount = amount;
+      e.category = category;
+      e.note = note;
+      e.save();
+    } else {
+      final id = DateTime.now().millisecondsSinceEpoch.toString();
+      box.add(
+        CommonExpense(
+          id: id,
+          title: title,
+          amount: amount,
+          category: category,
+          note: note,
+        ),
+      );
+    }
+    widget.onSaved();
+    Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Form(
+        key: _formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            children: [
+              const Text(
+                "Add / Edit Common Expense",
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                initialValue: title,
+                decoration: const InputDecoration(labelText: 'Title'),
+                validator: (v) => v == null || v.isEmpty ? 'Required' : null,
+                onSaved: (v) => title = v ?? '',
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                initialValue: amount > 0 ? amount.toString() : '',
+                decoration: const InputDecoration(labelText: 'Amount'),
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                validator: (v) =>
+                    v == null || double.tryParse(v) == null ? 'Invalid' : null,
+                onSaved: (v) => amount = double.tryParse(v ?? '0') ?? 0,
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: category,
+                items: defaultCategories
+                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                    .toList(),
+                onChanged: (v) => setState(() => category = v!),
+                decoration: const InputDecoration(labelText: 'Category'),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                initialValue: note,
+                decoration: const InputDecoration(labelText: 'Note'),
+                onSaved: (v) => note = v ?? '',
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(onPressed: save, child: const Text('Save')),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class Expense extends HiveObject {
   Expense({
@@ -327,44 +599,12 @@ class EarningAdapter extends TypeAdapter<Earning> {
   }
 }
 
-/// ===== CONSTANTS =====
-const List<String> defaultCategories = [
-  'Food',
-  'Travel',
-  'Shopping',
-  'Bills',
-  'Fuel',
-  'Rent',
-  'Life',
-  'Others',
-];
+/// ===== FILTER ENUMS for Monthly Page =====
+enum MonthlyFilter { all, income, expense }
 
-const Map<String, IconData> categoryIcons = {
-  'Food': Icons.restaurant,
-  'Travel': Icons.flight,
-  'Shopping': Icons.shopping_cart,
-  'Bills': Icons.receipt_long,
-  'Fuel': Icons.local_gas_station,
-  'Rent': Icons.home,
-  'Life': Icons.favorite,
-  'Others': Icons.more_horiz,
-};
+enum ExpenseStatusFilter { all, paid, unpaid }
 
-const Map<String, Color> categoryColors = {
-  'Food': Colors.orange,
-  'Travel': Colors.blue,
-  'Shopping': Colors.purple,
-  'Bills': Colors.grey,
-  'Fuel': Colors.red,
-  'Rent': Colors.teal,
-  'Life': Colors.pink,
-  'Others': Colors.green,
-};
-
-/// ===== FILTER ENUM for Monthly Page =====
-enum MonthlyFilter { all, income, paid, unpaid }
-
-/// ===== MONTHLY PAGE (original Home content with Filters fixed) =====
+/// ===== MONTHLY PAGE =====
 class MonthlyPage extends StatefulWidget {
   final Function(bool) onToggleTheme;
   final ThemeMode themeMode;
@@ -389,6 +629,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
 
   late DateTime selectedMonth;
   MonthlyFilter _filter = MonthlyFilter.all;
+  ExpenseStatusFilter _expenseStatusFilter = ExpenseStatusFilter.all;
 
   @override
   void initState() {
@@ -404,7 +645,6 @@ class _MonthlyPageState extends State<MonthlyPage> {
     }
   }
 
-  // These compute totals from ALL data for remainingBalance card (month totals)
   double get totalExpensesForMonth {
     return expenseBox.values
         .where(
@@ -425,7 +665,6 @@ class _MonthlyPageState extends State<MonthlyPage> {
         .fold(0.0, (s, e) => s + e.amount);
   }
 
-  // Totals based on currently visible (filtered) lists
   double displayedExpensesTotal(List<Expense> expenses) {
     return expenses.fold(0.0, (s, e) => s + e.amount);
   }
@@ -567,54 +806,291 @@ class _MonthlyPageState extends State<MonthlyPage> {
     );
   }
 
-  /// Apply filter to produce visible expense & earning lists.
+  /// Apply filter to expenses
   List<Expense> _applyExpenseFilter(List<Expense> expenses) {
     switch (_filter) {
-      case MonthlyFilter.paid:
-        return expenses.where((e) => e.isPaid).toList();
-      case MonthlyFilter.unpaid:
-        return expenses.where((e) => !e.isPaid).toList();
-      case MonthlyFilter.income:
-        return []; // hide expenses when income filter selected
       case MonthlyFilter.all:
-      default:
-        return expenses;
+        return expenses; // show all
+      case MonthlyFilter.income:
+        return []; // no expenses in income view
+      case MonthlyFilter.expense:
+        switch (_expenseStatusFilter) {
+          case ExpenseStatusFilter.all:
+            return expenses;
+          case ExpenseStatusFilter.paid:
+            return expenses.where((e) => e.isPaid).toList();
+          case ExpenseStatusFilter.unpaid:
+            return expenses.where((e) => !e.isPaid).toList();
+        }
     }
   }
 
+  /// Apply filter to earnings
   List<Earning> _applyEarningFilter(List<Earning> earnings) {
     switch (_filter) {
-      case MonthlyFilter.income:
-        return earnings; // show earnings only
-      case MonthlyFilter.paid:
-        return earnings; // earnings always shown as "paid" when Paid filter selected
-      case MonthlyFilter.unpaid:
-        return []; // no earnings when Unpaid filter selected
       case MonthlyFilter.all:
-      default:
-        return earnings;
+        return earnings; // show earnings
+      case MonthlyFilter.income:
+        return earnings; // all earnings
+      case MonthlyFilter.expense:
+        return []; // focus on expenses only
+    }
+  }
+
+  /// 👉 Use Common Expense (multi-select) from Monthly tab
+  Future<void> _showCommonApplySheet() async {
+    final box = Hive.box<CommonExpense>('common_expenses_box');
+    final items = box.values.toList();
+
+    if (items.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No Common Expenses found')));
+      return;
+    }
+
+    final Set<CommonExpense> selected = {};
+
+    final result = await showModalBottomSheet<List<CommonExpense>>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) {
+        final height = min(450.0, MediaQuery.of(ctx).size.height * 0.7);
+        return SafeArea(
+          child: SizedBox(
+            height: height,
+            child: StatefulBuilder(
+              builder: (ctx2, setSt) {
+                return Column(
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      child: Text(
+                        'Select Common Expenses to apply',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: items.length,
+                        itemBuilder: (c, i) {
+                          final ce = items[i];
+                          final isSel = selected.contains(ce);
+                          return CheckboxListTile(
+                            value: isSel,
+                            title: Text(ce.title),
+                            subtitle: Text(
+                              '${ce.category} • ₹${ce.amount.toStringAsFixed(2)}',
+                            ),
+                            onChanged: (v) {
+                              setSt(() {
+                                if (v == true) {
+                                  selected.add(ce);
+                                } else {
+                                  selected.remove(ce);
+                                }
+                              });
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx2),
+                            child: const Text('Cancel'),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            onPressed: () {
+                              Navigator.pop(ctx2, selected.toList());
+                            },
+                            child: const Text('Apply'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+
+    if (result == null || result.isEmpty) return;
+
+    final expensesBox = Hive.box<Expense>('expenses_box');
+    int added = 0;
+
+    for (final ce in result) {
+      final alreadyExists = expensesBox.values.any(
+        (e) =>
+            e.date.year == selectedMonth.year &&
+            e.date.month == selectedMonth.month &&
+            e.title == ce.title &&
+            e.category == ce.category &&
+            (e.amount - ce.amount).abs() < 0.01,
+      );
+      if (alreadyExists) continue;
+
+      final id = DateTime.now().millisecondsSinceEpoch.toString() + '_' + ce.id;
+      final dateToUse = DateTime(selectedMonth.year, selectedMonth.month, 1);
+
+      expensesBox.add(
+        Expense(
+          id: id,
+          title: ce.title,
+          amount: ce.amount,
+          category: ce.category,
+          date: dateToUse,
+          note: ce.note,
+          isPaid: false, // keep as Unpaid as requested
+        ),
+      );
+      added++;
+    }
+
+    if (!mounted) return;
+
+    if (added > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Applied $added common expense(s) for ${DateFormat.yMMMM().format(selectedMonth)}',
+          ),
+        ),
+      );
+      setState(() {});
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No new expenses added (already exist in this month)'),
+        ),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final isDark = widget.themeMode == ThemeMode.dark;
+    final theme = Theme.of(context);
+
+    // Helper for main filter buttons (Style B: Outlined buttons with icons)
+    Widget buildFilterButton(MonthlyFilter f, IconData icon, String label) {
+      final selected = _filter == f;
+      return Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: OutlinedButton.icon(
+          onPressed: () {
+            setState(() {
+              _filter = f;
+              if (f == MonthlyFilter.expense) {
+                _expenseStatusFilter = ExpenseStatusFilter.all;
+              }
+            });
+          },
+          icon: Icon(icon, size: 18),
+          label: Text(label),
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            minimumSize: const Size(0, 36),
+            side: BorderSide(
+              color: selected
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.outline.withOpacity(0.6),
+            ),
+            backgroundColor: selected
+                ? theme.colorScheme.primary
+                : Colors.transparent,
+            foregroundColor: selected ? theme.colorScheme.onPrimary : null,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Helper for expense sub-filter buttons (Paid / Unpaid)
+    Widget buildExpenseStatusButton(
+      ExpenseStatusFilter status,
+      IconData icon,
+      String label,
+    ) {
+      final selected = _expenseStatusFilter == status;
+      final colorBase = isDark ? Colors.cyanAccent : theme.colorScheme.primary;
+      return Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: OutlinedButton.icon(
+          onPressed: () {
+            setState(() {
+              _expenseStatusFilter = status;
+            });
+          },
+          icon: Icon(icon, size: 18),
+          label: Text(label),
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            minimumSize: const Size(0, 34),
+            side: BorderSide(
+              color: selected ? colorBase : colorBase.withOpacity(0.4),
+            ),
+            backgroundColor: selected
+                ? colorBase.withOpacity(0.18)
+                : Colors.transparent,
+            foregroundColor: selected ? colorBase : null,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Expense Tracker'),
         actions: [
-          IconButton(
-            onPressed: () => widget.onToggleTheme(!isDark),
-            icon: Icon(isDark ? Icons.dark_mode : Icons.light_mode),
+          // Theme Toggle Switch
+          Row(
+            children: [
+              Icon(isDark ? Icons.dark_mode : Icons.light_mode),
+              Switch(value: isDark, onChanged: (v) => widget.onToggleTheme(v)),
+            ],
           ),
-         
+          const SizedBox(width: 8),
+
+          // Common Expense Quick Button
+          TextButton.icon(
+            onPressed: _showCommonApplySheet,
+            icon: const Icon(Icons.repeat, size: 18),
+            label: const Text("Use Common"),
+            style: TextButton.styleFrom(
+              foregroundColor: isDark
+                  ? Colors.cyanAccent
+                  : Theme.of(context).colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 8),
         ],
       ),
+
       body: ValueListenableBuilder(
         valueListenable: expenseBox.listenable(),
         builder: (context, Box<Expense> b, _) {
-          // Fetch expenses for selected month
           final allExpenses =
               b.values
                   .where(
@@ -625,7 +1101,6 @@ class _MonthlyPageState extends State<MonthlyPage> {
                   .toList()
                 ..sort((a, b) => b.date.compareTo(a.date));
 
-          // Earnings list (listen to earningBox separately inside)
           return ValueListenableBuilder(
             valueListenable: earningBox.listenable(),
             builder: (context, Box<Earning> eb, __) {
@@ -639,7 +1114,6 @@ class _MonthlyPageState extends State<MonthlyPage> {
                       .toList()
                     ..sort((a, b) => b.date.compareTo(a.date));
 
-              // Apply filters correctly
               final visibleExpenses = _applyExpenseFilter(allExpenses);
               final visibleEarnings = _applyEarningFilter(allEarnings);
 
@@ -654,6 +1128,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
               return SingleChildScrollView(
                 child: Column(
                   children: [
+                    // Month selector
                     Padding(
                       padding: const EdgeInsets.all(12),
                       child: Row(
@@ -679,43 +1154,78 @@ class _MonthlyPageState extends State<MonthlyPage> {
                       ),
                     ),
 
-                    // Filter chips
+                    // Main filter buttons row
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Wrap(
-                        spacing: 8,
-                        children: [
-                          ChoiceChip(
-                            label: const Text('All'),
-                            selected: _filter == MonthlyFilter.all,
-                            onSelected: (_) =>
-                                setState(() => _filter = MonthlyFilter.all),
-                          ),
-                          ChoiceChip(
-                            label: const Text('Income'),
-                            selected: _filter == MonthlyFilter.income,
-                            onSelected: (_) =>
-                                setState(() => _filter = MonthlyFilter.income),
-                          ),
-                          ChoiceChip(
-                            label: const Text('Paid'),
-                            selected: _filter == MonthlyFilter.paid,
-                            onSelected: (_) =>
-                                setState(() => _filter = MonthlyFilter.paid),
-                          ),
-                          ChoiceChip(
-                            label: const Text('Unpaid'),
-                            selected: _filter == MonthlyFilter.unpaid,
-                            onSelected: (_) =>
-                                setState(() => _filter = MonthlyFilter.unpaid),
-                          ),
-                        ],
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            buildFilterButton(
+                              MonthlyFilter.all,
+                              Icons.all_inclusive,
+                              'All',
+                            ),
+                            buildFilterButton(
+                              MonthlyFilter.income,
+                              Icons.trending_up,
+                              'Income',
+                            ),
+                            buildFilterButton(
+                              MonthlyFilter.expense,
+                              Icons.shopping_bag,
+                              'Expense',
+                            ),
+                          ],
+                        ),
                       ),
                     ),
 
-                    const SizedBox(height: 12),
+                    // Animated Paid/Unpaid row (only when Expense selected)
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 250),
+                      transitionBuilder: (child, animation) {
+                        return SizeTransition(
+                          sizeFactor: animation,
+                          axisAlignment: -1.0,
+                          child: FadeTransition(
+                            opacity: animation,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: _filter == MonthlyFilter.expense
+                          ? Padding(
+                              key: const ValueKey('subFilterRow'),
+                              padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+                              child: Center(
+                                child: SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      buildExpenseStatusButton(
+                                        ExpenseStatusFilter.paid,
+                                        Icons.check_circle,
+                                        'Paid',
+                                      ),
+                                      buildExpenseStatusButton(
+                                        ExpenseStatusFilter.unpaid,
+                                        Icons.pending_actions,
+                                        'Unpaid',
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            )
+                          : const SizedBox(
+                              key: ValueKey('subFilterEmpty'),
+                              height: 0,
+                            ),
+                    ),
 
-                    // ----- Remaining Balance Card (separate & prominent) -----
+                    // Remaining Balance Card
                     Card(
                       margin: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -745,16 +1255,12 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                   ),
                                 ),
                                 const SizedBox(height: 6),
-                                Text('Earnings - Expenses'),
+                                const Text('Earnings - Expenses'),
                               ],
                             ),
                             Column(
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
-                                Text(
-                                  'Displayed: ₹${(displayedEarnings - displayedExpenses).toStringAsFixed(2)}',
-                                  style: const TextStyle(fontSize: 12),
-                                ),
                                 const SizedBox(height: 8),
                                 ElevatedButton.icon(
                                   onPressed: showAddChoiceSheet,
@@ -773,7 +1279,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                       ),
                     ),
 
-                    // ===== Earnings Card (shows displayed earnings total) =====
+                    // Earnings Card
                     Card(
                       margin: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -822,7 +1328,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                       ),
                     ),
 
-                    // ===== Expenses Card (shows displayed expenses total) =====
+                    // Expenses Card
                     Card(
                       margin: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -865,7 +1371,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                       ),
                     ),
 
-                    // Category Summary (based on all expenses, but you could adjust to displayed)
+                    // Category Summary
                     if (allExpenses.isNotEmpty)
                       Card(
                         margin: const EdgeInsets.symmetric(
@@ -886,8 +1392,9 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                 final catItems = allExpenses
                                     .where((e) => e.category == cat)
                                     .toList();
-                                if (catItems.isEmpty)
+                                if (catItems.isEmpty) {
                                   return const SizedBox.shrink();
+                                }
                                 final total = catItems.fold(
                                   0.0,
                                   (s, e) => s + e.amount,
@@ -1355,7 +1862,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
   }
 
   double pendingTotalForVisible(List<Expense> allExpenses) {
-    // pending based on current filter: unpaid filter shows only unpaid; for display we'll return unpaid in that month
+    // pending: all unpaid expenses for this month
     final unpaid = allExpenses
         .where((e) => !e.isPaid)
         .fold(0.0, (s, e) => s + e.amount);
@@ -1363,7 +1870,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
   }
 }
 
-/// ===== OVERVIEW PAGE (All months card list with Colored Highlight + Sparkline + Recurring Salary settings) =====
+/// ===== OVERVIEW PAGE =====
 class OverviewPage extends StatefulWidget {
   final DateTime selectedMonth;
   final void Function(DateTime) onMonthSelected;
@@ -1382,9 +1889,7 @@ class _OverviewPageState extends State<OverviewPage> {
   final Box<Earning> earningBox = Hive.box<Earning>('earnings_box');
   final Box settings = Hive.box('settings');
 
-  /// Builds a map of YearMonth -> totals
   Map<String, Map<String, double>> computeMonthTotals() {
-    // key format: yyyy-MM
     final Map<String, Map<String, double>> totals = {};
     for (final e in expenseBox.values) {
       final key = '${e.date.year}-${e.date.month.toString().padLeft(2, '0')}';
@@ -1422,8 +1927,6 @@ class _OverviewPageState extends State<OverviewPage> {
     return Theme.of(context).cardColor;
   }
 
-  /// Compute daily-sampled balance trend for a given month as list of cumulative balances at sampled days.
-  /// We'll sample up to `maxPoints` points evenly across the month (default 12).
   List<double> computeDailySampledBalance(
     int year,
     int month, {
@@ -1479,8 +1982,9 @@ class _OverviewPageState extends State<OverviewPage> {
         )
         .fold(0.0, (s, ex) => s + ex.amount);
     final lastBalance = earningsLast - expensesLast;
-    if (points.isEmpty || (points.isNotEmpty && points.last != lastBalance))
+    if (points.isEmpty || (points.isNotEmpty && points.last != lastBalance)) {
       points.add(lastBalance);
+    }
     return points;
   }
 
@@ -1493,13 +1997,11 @@ class _OverviewPageState extends State<OverviewPage> {
     final totals = computeMonthTotals();
     final keys = sortedMonthKeysDesc(totals);
 
-    // Recurring salary settings (from settings box)
     final recurringEnabled =
         settings.get('recurring_enabled', defaultValue: false) as bool;
     final recurringAmount =
         (settings.get('recurring_amount', defaultValue: 0.0) as num).toDouble();
 
-    // If no months yet, show a helpful empty state
     if (keys.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text('Overview')),
@@ -1508,17 +2010,15 @@ class _OverviewPageState extends State<OverviewPage> {
             padding: const EdgeInsets.symmetric(horizontal: 24.0),
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.calendar_month, size: 64, color: Colors.grey),
-                const SizedBox(height: 12),
-                const Text(
+              children: const [
+                Icon(Icons.calendar_month, size: 64, color: Colors.grey),
+                SizedBox(height: 12),
+                Text(
                   'No transactions yet',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Add expenses or earnings to see month-wise summary.',
-                ),
+                SizedBox(height: 8),
+                Text('Add expenses or earnings to see month-wise summary.'),
               ],
             ),
           ),
@@ -1591,7 +2091,6 @@ class _OverviewPageState extends State<OverviewPage> {
               final balanceLabel =
                   (balance >= 0 ? '+' : '') + '₹${balance.toStringAsFixed(2)}';
 
-              // compute daily-sampled trend
               final points = computeDailySampledBalance(
                 year,
                 month,
@@ -1824,12 +2323,13 @@ class _OverviewPageState extends State<OverviewPage> {
   }
 }
 
-/// ===== ADD/EDIT SHEET (handles both Expense & Earning) =====
+/// ===== ADD/EDIT SHEET =====
 class AddEditSheet extends StatefulWidget {
   final Expense? expense;
   final Earning? earning;
   final bool isEarning;
   final VoidCallback? onSaved;
+
   const AddEditSheet({
     super.key,
     this.expense,
@@ -1845,18 +2345,15 @@ class AddEditSheet extends StatefulWidget {
 class _AddEditSheetState extends State<AddEditSheet> {
   final _formKey = GlobalKey<FormState>();
 
-  // Common fields
   late String title;
   late double amount;
   late DateTime date;
   late String note;
   late TextEditingController _dateController;
 
-  // Expense-specific
   late String category;
   late bool isPaid;
 
-  // Earning-specific
   late String source;
 
   @override
@@ -1892,6 +2389,17 @@ class _AddEditSheetState extends State<AddEditSheet> {
     super.dispose();
   }
 
+  /// Prefill fields when a CommonExpense is chosen
+  void applyCommonExpense(CommonExpense ce) {
+    setState(() {
+      title = ce.title;
+      amount = ce.amount;
+      category = ce.category;
+      note = ce.note;
+    });
+  }
+
+  /// Save current form
   void save() {
     if (_formKey.currentState?.validate() ?? false) {
       _formKey.currentState?.save();
@@ -1966,15 +2474,32 @@ class _AddEditSheetState extends State<AddEditSheet> {
             ),
             const SizedBox(height: 12),
 
+            // “Use Common Expense” button (only for Expense mode)
+            if (!isE)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () async {
+                    final selected = await showModalBottomSheet<CommonExpense>(
+                      context: context,
+                      builder: (ctx) => const SelectCommonExpenseSheet(),
+                    );
+                    if (selected != null) {
+                      applyCommonExpense(selected);
+                    }
+                  },
+                  icon: const Icon(Icons.library_books_outlined),
+                  label: const Text("Use Common Expense"),
+                ),
+              ),
+
             TextFormField(
               initialValue: title,
               decoration: InputDecoration(
                 labelText: isE ? 'Title (optional)' : 'Title',
               ),
               validator: (v) {
-                if (!isE) {
-                  return v == null || v.isEmpty ? 'Required' : null;
-                }
+                if (!isE) return v == null || v.isEmpty ? 'Required' : null;
                 return null;
               },
               onSaved: (v) => title = v ?? '',
@@ -2016,9 +2541,9 @@ class _AddEditSheetState extends State<AddEditSheet> {
 
             TextFormField(
               readOnly: true,
-              decoration: InputDecoration(
+              decoration: const InputDecoration(
                 labelText: 'Date',
-                suffixIcon: const Icon(Icons.calendar_today),
+                suffixIcon: Icon(Icons.calendar_today),
               ),
               controller: _dateController,
               onTap: () async {
@@ -2055,11 +2580,54 @@ class _AddEditSheetState extends State<AddEditSheet> {
               ),
 
             const SizedBox(height: 20),
-
             ElevatedButton(onPressed: save, child: const Text('Save')),
             const SizedBox(height: 20),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Bottom sheet selector for Common Expenses (single-select for Add/Edit)
+class SelectCommonExpenseSheet extends StatelessWidget {
+  const SelectCommonExpenseSheet({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final box = Hive.box<CommonExpense>('common_expenses_box');
+    final items = box.values.toList();
+
+    if (items.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(24),
+        child: Text(
+          "No Common Expenses available. Add some in the Common tab.",
+        ),
+      );
+    }
+
+    return SafeArea(
+      child: ListView(
+        shrinkWrap: true,
+        children: [
+          const Padding(
+            padding: EdgeInsets.all(12),
+            child: Text(
+              "Select a Common Expense to reuse",
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
+          ),
+          ...items.map(
+            (e) => ListTile(
+              leading: const Icon(Icons.repeat),
+              title: Text(e.title),
+              subtitle: Text('${e.category} • ₹${e.amount.toStringAsFixed(2)}'),
+              onTap: () => Navigator.pop(context, e),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
       ),
     );
   }
