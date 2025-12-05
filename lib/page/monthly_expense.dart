@@ -29,6 +29,7 @@ class MonthlyPage extends StatefulWidget {
 
   @override
   State<MonthlyPage> createState() => _MonthlyPageState();
+
 }
 
 class _MonthlyPageState extends State<MonthlyPage> {
@@ -930,124 +931,138 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                 horizontal: 12,
                                 vertical: 6,
                               ),
-                              child: ListTile(
-                                onTap: () => openAddEditSheet(
-                                  expense: e,
-                                  isEarning: false,
-                                ),
-                                leading: CircleAvatar(
-                                  backgroundColor:
-                                      categoryColors[e.category] ??
-                                      Colors.blueGrey,
-                                  child: Icon(
-                                    categoryIcons[e.category] ?? Icons.money,
-                                    color: Colors.white,
+                              child: 
+                              ListTile(
+                                  onTap: () => openAddEditSheet(
+                                    expense: e,
+                                    isEarning: false,
+                                  ),
+                                  leading: CircleAvatar(
+                                    backgroundColor: categoryColors[e.category] ?? Colors.blueGrey,
+                                    child: Icon(
+                                      categoryIcons[e.category] ?? Icons.money,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                  title: Text(
+                                    e.title.isNotEmpty ? e.title : e.category,
+                                    style: const TextStyle(fontWeight: FontWeight.bold),
+                                  ),
+                                  subtitle: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      // Existing info line
+                                      Text(
+                                        '${DateFormat.yMMMd().format(e.date)} • ${e.note}'
+                                        '${(e.autoReduceEnabled && e.totalBudget != null && e.totalBudget! > 0) ? ' • Budget: ₹${e.totalBudget!.toStringAsFixed(0)}' : ''}',
+                                      ),
+
+                                      // ✅ NEW: Auto Reduction Progress Details
+                                      if (e.autoReduceEnabled && (e.dailyReduce ?? 0) > 0) ...[
+                                        Text(
+                                          'Auto reducing ₹${e.dailyReduce!.toStringAsFixed(0)}/day',
+                                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                            color: Colors.orangeAccent,
+                                          ),
+                                        ),
+                                        if (e.totalBudget != null && e.totalBudget! > 0)
+                                          Builder(builder: (_) {
+                                            final totalDays = (e.totalBudget! / e.dailyReduce!).floor();
+                                            final daysDeducted =
+                                                min(DateTime.now().difference(e.date).inDays, totalDays);
+                                            final remainingDays = max(totalDays - daysDeducted, 0);
+                                            final percent = (daysDeducted / totalDays * 100).clamp(0, 100);
+
+                                            return Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                const SizedBox(height: 2),
+                                                Text(
+                                                  'Deducted: $daysDeducted / $totalDays days '
+                                                  '(${percent.toStringAsFixed(0)}%) • '
+                                                  'Remaining: $remainingDays days',
+                                                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                        color: Colors.cyanAccent,
+                                                        fontSize: 12,
+                                                      ),
+                                                ),
+                                                const SizedBox(height: 4),
+                                                LinearProgressIndicator(
+                                                  value: daysDeducted / totalDays,
+                                                  minHeight: 4,
+                                                  backgroundColor: Colors.grey.shade300,
+                                                  color: Colors.cyanAccent,
+                                                ),
+                                              ],
+                                            );
+                                          }),
+                                      ],
+                                    ],
+                                  ),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text('₹${e.amount.toStringAsFixed(2)}'),
+                                      const SizedBox(width: 8),
+                                      Checkbox(
+                                        value: e.isPaid,
+                                        onChanged: (val) {
+                                          setState(() {
+                                            e.isPaid = val ?? false;
+                                            e.save();
+                                          });
+                                        },
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(
+                                          Icons.delete,
+                                          color: Colors.redAccent,
+                                        ),
+                                        onPressed: () async {
+                                          final confirmed = await showDialog<bool>(
+                                            context: context,
+                                            builder: (ctx) => AlertDialog(
+                                              title: const Text("Delete Expense?"),
+                                              content: const Text("This action cannot be undone."),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed: () => Navigator.pop(ctx, false),
+                                                  child: const Text("Cancel"),
+                                                ),
+                                                TextButton(
+                                                  onPressed: () => Navigator.pop(ctx, true),
+                                                  child: const Text("Delete"),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                          if (confirmed ?? false) {
+                                            final deletedCopy = e.copyWith();
+                                            await e.delete();
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                SnackBar(
+                                                  content: const Text('Expense deleted'),
+                                                  action: SnackBarAction(
+                                                    label: 'UNDO',
+                                                    onPressed: () async {
+                                                      final box = Hive.box<Expense>('expenses_box');
+                                                      await box.add(deletedCopy);
+                                                      setState(() {});
+                                                    },
+                                                  ),
+                                                  duration: const Duration(seconds: 4),
+                                                ),
+                                              );
+                                            }
+                                          }
+                                        },
+                                      ),
+                                    ],
                                   ),
                                 ),
-                                title: Text(
-                                  e.title.isNotEmpty ? e.title : e.category,
-                                ),
-                                subtitle: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      '${DateFormat.yMMMd().format(e.date)} • ${e.note}'
-                                      '${(e.autoReduceEnabled && e.totalBudget != null && e.totalBudget! > 0) ? ' • Budget: ₹${e.totalBudget!.toStringAsFixed(0)}' : ''}',
-                                    ),
-                                    if (e.autoReduceEnabled &&
-                                        (e.dailyReduce ?? 0) > 0)
-                                      Text(
-                                        'Auto reducing ₹${e.dailyReduce!.toStringAsFixed(0)}/day (UTC)',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall
-                                            ?.copyWith(
-                                              color: Colors.orangeAccent,
-                                            ),
-                                      ),
-                                  ],
-                                ),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text('₹${e.amount.toStringAsFixed(2)}'),
-                                    const SizedBox(width: 8),
-                                    Checkbox(
-                                      value: e.isPaid,
-                                      onChanged: (val) {
-                                        setState(() {
-                                          e.isPaid = val ?? false;
-                                          e.save();
-                                        });
-                                      },
-                                    ),
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.delete,
-                                        color: Colors.redAccent,
-                                      ),
-                                      onPressed: () async {
-                                        final confirmed =
-                                            await showDialog<bool>(
-                                          context: context,
-                                          builder: (ctx) => AlertDialog(
-                                            title: const Text(
-                                              "Delete Expense?",
-                                            ),
-                                            content: const Text(
-                                              "This action cannot be undone.",
-                                            ),
-                                            actions: [
-                                              TextButton(
-                                                onPressed: () =>
-                                                    Navigator.pop(ctx, false),
-                                                child: const Text("Cancel"),
-                                              ),
-                                              TextButton(
-                                                onPressed: () =>
-                                                    Navigator.pop(ctx, true),
-                                                child: const Text("Delete"),
-                                              ),
-                                            ],
-                                          ),
-                                        );
-                                        if (confirmed ?? false) {
-                                          final deletedCopy = e.copyWith();
-                                          await e.delete();
-                                          if (mounted) {
-                                            ScaffoldMessenger.of(
-                                              context,
-                                            ).hideCurrentSnackBar();
-                                            ScaffoldMessenger.of(
-                                              context,
-                                            ).showSnackBar(
-                                              SnackBar(
-                                                content: const Text(
-                                                  'Expense deleted',
-                                                ),
-                                                action: SnackBarAction(
-                                                  label: 'UNDO',
-                                                  onPressed: () async {
-                                                    final box =
-                                                        Hive.box<Expense>(
-                                                          'expenses_box',
-                                                        );
-                                                    await box.add(deletedCopy);
-                                                    setState(() {});
-                                                  },
-                                                ),
-                                                duration: const Duration(
-                                                  seconds: 4,
-                                                ),
-                                              ),
-                                            );
-                                          }
-                                        }
-                                      },
-                                    ),
-                                  ],
-                                ),
-                              ),
+
                             ),
                           );
                         },
@@ -1287,9 +1302,8 @@ class _MonthlyPageState extends State<MonthlyPage> {
   }
 }
 
-
 class MonthlyExpensesPage extends StatefulWidget {
-  const MonthlyExpensesPage({Key? key}) : super(key: key);
+  const MonthlyExpensesPage({super.key});
 
   @override
   State<MonthlyExpensesPage> createState() => _MonthlyExpensesPageState();
@@ -1307,7 +1321,8 @@ class _MonthlyExpensesPageState extends State<MonthlyExpensesPage> {
   }
 
   void _loadExpenses() {
-    _expenses = _expenseBox.values.toList();
+    _expenses = _expenseBox.values.toList()
+      ..sort((a, b) => b.date.compareTo(a.date)); // latest first
     setState(() {});
   }
 
@@ -1322,22 +1337,59 @@ class _MonthlyExpensesPageState extends State<MonthlyExpensesPage> {
               itemCount: _expenses.length,
               itemBuilder: (context, index) {
                 final e = _expenses[index];
-                return LongPressDraggable(
-                  data: e,
-                  feedback: Material(
-                    elevation: 8,
-                    borderRadius: BorderRadius.circular(12),
-                    child: SizedBox(
-                      width: MediaQuery.of(context).size.width * 0.9,
-                      child: ExpenseCard(expense: e, isDragging: true),
+                return Card(
+                  margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor:
+                          categoryColors[e.category] ?? Colors.blueGrey,
+                      child: Icon(
+                        categoryIcons[e.category] ?? Icons.money,
+                        color: Colors.white,
+                      ),
+                    ),
+                    title: Text(
+                      e.title.isNotEmpty ? e.title : e.category,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(
+                      '${DateFormat.yMMMd().format(e.date)} • ₹${e.amount.toStringAsFixed(2)}'
+                      '${e.isPaid ? " • Paid" : " • Unpaid"}',
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.redAccent),
+                      onPressed: () async {
+                        final confirm = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text('Delete Expense?'),
+                            content: const Text(
+                              'Do you want to delete this expense?',
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, false),
+                                child: const Text('Cancel'),
+                              ),
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, true),
+                                child: const Text('Delete'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirm ?? false) {
+                          await e.delete();
+                          _loadExpenses();
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Expense deleted')),
+                            );
+                          }
+                        }
+                      },
                     ),
                   ),
-                  childWhenDragging: Opacity(
-                    opacity: 0.3,
-                    child: ExpenseCard(expense: e),
-                  ),
-                  onDragStarted: () => HapticFeedback.lightImpact(),
-                  child: ExpenseCard(expense: e),
                 );
               },
             ),
