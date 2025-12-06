@@ -4,13 +4,12 @@ import 'package:csv/csv.dart';
 import 'package:expense_tracker/page/common_expense.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
+import 'dart:ui';
 
 import '../main.dart';
 import '../models/earning_expense.dart';
-
 
 // ======================= MONTHLY PAGE ===========================
 class MonthlyPage extends StatefulWidget {
@@ -29,12 +28,12 @@ class MonthlyPage extends StatefulWidget {
 
   @override
   State<MonthlyPage> createState() => _MonthlyPageState();
-
 }
 
 class _MonthlyPageState extends State<MonthlyPage> {
   final Box<Expense> expenseBox = Hive.box<Expense>('expenses_box');
   final Box<Earning> earningBox = Hive.box<Earning>('earnings_box');
+  String? _expandedExpenseId;
 
   late DateTime selectedMonth;
   MonthlyFilter _filter = MonthlyFilter.all;
@@ -499,7 +498,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                         e.date.month == selectedMonth.month,
                   )
                   .toList()
-                ..sort((a, b) => b.date.compareTo(a.date));
+                ..sort((a, b) => a.sortIndex.compareTo(b.sortIndex));
 
           return ValueListenableBuilder(
             valueListenable: earningBox.listenable(),
@@ -840,230 +839,335 @@ class _MonthlyPageState extends State<MonthlyPage> {
                       ),
                     ),
                     const SizedBox(height: 8),
-
-                    // Expenses List (filtered)
+                    // Expenses List (filtered & draggable)
                     if (visibleExpenses.isNotEmpty)
-                      ListView.builder(
+                      // ✅ Use shrinkWrap + NeverScrollableScrollPhysics so it works inside a scroll view
+                      ReorderableListView.builder(
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
+                        buildDefaultDragHandles:
+                            false, // ✅ removes the default drag icon
                         itemCount: visibleExpenses.length,
+                        onReorder: (oldIndex, newIndex) {
+                          setState(() {
+                            if (newIndex > oldIndex) newIndex -= 1;
+                            final item = visibleExpenses.removeAt(oldIndex);
+                            visibleExpenses.insert(newIndex, item);
+                          });
+
+                          // Optional: Save the new order (Hive)
+                          for (int i = 0; i < visibleExpenses.length; i++) {
+                            final e = visibleExpenses[i];
+                            e.sortIndex = i;
+                            e.save();
+                          }
+                        },
                         itemBuilder: (ctx, i) {
                           final e = visibleExpenses[i];
 
-                          return Dismissible(
+                          // 🔢 Calculate daily reduction details
+                          final bool hasAutoReduce =
+                              e.autoReduceEnabled &&
+                              (e.dailyReduce ?? 0) > 0 &&
+                              (e.totalBudget ?? 0) > 0;
+                          final int totalDays = hasAutoReduce
+                              ? (e.totalBudget! / e.dailyReduce!).floor()
+                              : 0;
+                          final int daysPassed = hasAutoReduce
+                              ? DateTime.now().difference(e.date).inDays
+                              : 0;
+                          final int daysDeducted = hasAutoReduce
+                              ? min(daysPassed, totalDays)
+                              : 0;
+                          final int remainingDays = hasAutoReduce
+                              ? max(totalDays - daysDeducted, 0)
+                              : 0;
+                          final double percent = hasAutoReduce
+                              ? (daysDeducted / totalDays * 100)
+                                    .clamp(0, 100)
+                                    .toDouble()
+                              : 0.0;
+
+                          return Column(
                             key: Key(
                               'expense_${e.id}_${e.date.millisecondsSinceEpoch}',
                             ),
-                            background: Container(
-                              color: Colors.green,
-                              alignment: Alignment.centerLeft,
-                              padding: const EdgeInsets.only(left: 20),
-                              child: const Icon(
-                                Icons.edit,
-                                color: Colors.white,
+                            children: [
+                              // 🔹 TEMPORARY INFO CARD (appears above when tapping ℹ️)
+                              AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 300),
+                                child:
+                                    _expandedExpenseId == e.id && hasAutoReduce
+                                    ? Padding(
+                                        key: ValueKey('info_${e.id}'),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 4,
+                                        ),
+                                        child: _TemporaryInfoCard(
+                                          title: "Auto Reduction Details",
+                                          percent: percent,
+                                          daysDeducted: daysDeducted,
+                                          remainingDays: remainingDays,
+                                          totalDays: totalDays,
+                                          dailyReduce: e.dailyReduce!,
+                                          onClose: () {
+                                            setState(
+                                              () => _expandedExpenseId = null,
+                                            );
+                                          },
+                                        ),
+                                      )
+                                    : const SizedBox.shrink(),
                               ),
-                            ),
-                            secondaryBackground: Container(
-                              color: Colors.red,
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 20),
-                              child: const Icon(
-                                Icons.delete,
-                                color: Colors.white,
-                              ),
-                            ),
-                            confirmDismiss: (direction) async {
-                              if (direction == DismissDirection.startToEnd) {
-                                openAddEditSheet(expense: e, isEarning: false);
-                                return false;
-                              } else {
-                                final shouldDelete = await showDialog<bool>(
-                                  context: context,
-                                  builder: (ctx) => AlertDialog(
-                                    title: const Text("Delete Expense?"),
-                                    content: const Text(
-                                      "Do you want to delete this item?",
-                                    ),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () =>
-                                            Navigator.pop(ctx, false),
-                                        child: const Text("Cancel"),
-                                      ),
-                                      TextButton(
-                                        onPressed: () =>
-                                            Navigator.pop(ctx, true),
-                                        child: const Text("Delete"),
-                                      ),
-                                    ],
+
+                              // 🔹 MAIN CARD WITH DRAG + DISMISS + CHECKBOX + DELETE
+                              ReorderableDragStartListener(
+                                index: i,
+                                key: Key(
+                                  'drag_${e.id}_${e.date.millisecondsSinceEpoch}',
+                                ),
+                                child: Dismissible(
+                                  key: Key(
+                                    'dismiss_${e.id}_${e.date.millisecondsSinceEpoch}',
                                   ),
-                                );
-                                return shouldDelete ?? false;
-                              }
-                            },
-                            onDismissed: (direction) async {
-                              final deletedCopy = e.copyWith();
-                              await e.delete();
-                              if (mounted) {
-                                ScaffoldMessenger.of(
-                                  context,
-                                ).hideCurrentSnackBar();
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: const Text('Expense deleted'),
-                                    action: SnackBarAction(
-                                      label: 'UNDO',
-                                      onPressed: () async {
-                                        final box = Hive.box<Expense>(
-                                          'expenses_box',
-                                        );
-                                        await box.add(deletedCopy);
-                                        setState(() {});
-                                      },
-                                    ),
-                                    duration: const Duration(seconds: 4),
-                                  ),
-                                );
-                              }
-                            },
-                            child: Card(
-                              margin: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 6,
-                              ),
-                              child: 
-                              ListTile(
-                                  onTap: () => openAddEditSheet(
-                                    expense: e,
-                                    isEarning: false,
-                                  ),
-                                  leading: CircleAvatar(
-                                    backgroundColor: categoryColors[e.category] ?? Colors.blueGrey,
-                                    child: Icon(
-                                      categoryIcons[e.category] ?? Icons.money,
+                                  background: Container(
+                                    color: Colors.green,
+                                    alignment: Alignment.centerLeft,
+                                    padding: const EdgeInsets.only(left: 20),
+                                    child: const Icon(
+                                      Icons.edit,
                                       color: Colors.white,
                                     ),
                                   ),
-                                  title: Text(
-                                    e.title.isNotEmpty ? e.title : e.category,
-                                    style: const TextStyle(fontWeight: FontWeight.bold),
+                                  secondaryBackground: Container(
+                                    color: Colors.red,
+                                    alignment: Alignment.centerRight,
+                                    padding: const EdgeInsets.only(right: 20),
+                                    child: const Icon(
+                                      Icons.delete,
+                                      color: Colors.white,
+                                    ),
                                   ),
-                                  subtitle: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      // Existing info line
-                                      Text(
-                                        '${DateFormat.yMMMd().format(e.date)} • ${e.note}'
-                                        '${(e.autoReduceEnabled && e.totalBudget != null && e.totalBudget! > 0) ? ' • Budget: ₹${e.totalBudget!.toStringAsFixed(0)}' : ''}',
-                                      ),
-
-                                      // ✅ NEW: Auto Reduction Progress Details
-                                      if (e.autoReduceEnabled && (e.dailyReduce ?? 0) > 0) ...[
-                                        Text(
-                                          'Auto reducing ₹${e.dailyReduce!.toStringAsFixed(0)}/day',
-                                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                            color: Colors.orangeAccent,
+                                  confirmDismiss: (direction) async {
+                                    if (direction ==
+                                        DismissDirection.startToEnd) {
+                                      openAddEditSheet(
+                                        expense: e,
+                                        isEarning: false,
+                                      );
+                                      return false;
+                                    } else {
+                                      final shouldDelete = await showDialog<bool>(
+                                        context: context,
+                                        builder: (ctx) => AlertDialog(
+                                          title: const Text("Delete Expense?"),
+                                          content: const Text(
+                                            "Do you want to delete this item?",
                                           ),
-                                        ),
-                                        if (e.totalBudget != null && e.totalBudget! > 0)
-                                          Builder(builder: (_) {
-                                            final totalDays = (e.totalBudget! / e.dailyReduce!).floor();
-                                            final daysDeducted =
-                                                min(DateTime.now().difference(e.date).inDays, totalDays);
-                                            final remainingDays = max(totalDays - daysDeducted, 0);
-                                            final percent = (daysDeducted / totalDays * 100).clamp(0, 100);
-
-                                            return Column(
-                                              crossAxisAlignment: CrossAxisAlignment.start,
-                                              children: [
-                                                const SizedBox(height: 2),
-                                                Text(
-                                                  'Deducted: $daysDeducted / $totalDays days '
-                                                  '(${percent.toStringAsFixed(0)}%) • '
-                                                  'Remaining: $remainingDays days',
-                                                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                                        color: Colors.cyanAccent,
-                                                        fontSize: 12,
-                                                      ),
-                                                ),
-                                                const SizedBox(height: 4),
-                                                LinearProgressIndicator(
-                                                  value: daysDeducted / totalDays,
-                                                  minHeight: 4,
-                                                  backgroundColor: Colors.grey.shade300,
-                                                  color: Colors.cyanAccent,
-                                                ),
-                                              ],
-                                            );
-                                          }),
-                                      ],
-                                    ],
-                                  ),
-                                  trailing: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text('₹${e.amount.toStringAsFixed(2)}'),
-                                      const SizedBox(width: 8),
-                                      Checkbox(
-                                        value: e.isPaid,
-                                        onChanged: (val) {
-                                          setState(() {
-                                            e.isPaid = val ?? false;
-                                            e.save();
-                                          });
-                                        },
-                                      ),
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.delete,
-                                          color: Colors.redAccent,
-                                        ),
-                                        onPressed: () async {
-                                          final confirmed = await showDialog<bool>(
-                                            context: context,
-                                            builder: (ctx) => AlertDialog(
-                                              title: const Text("Delete Expense?"),
-                                              content: const Text("This action cannot be undone."),
-                                              actions: [
-                                                TextButton(
-                                                  onPressed: () => Navigator.pop(ctx, false),
-                                                  child: const Text("Cancel"),
-                                                ),
-                                                TextButton(
-                                                  onPressed: () => Navigator.pop(ctx, true),
-                                                  child: const Text("Delete"),
-                                                ),
-                                              ],
+                                          actions: [
+                                            TextButton(
+                                              onPressed: () =>
+                                                  Navigator.pop(ctx, false),
+                                              child: const Text("Cancel"),
                                             ),
-                                          );
-                                          if (confirmed ?? false) {
-                                            final deletedCopy = e.copyWith();
-                                            await e.delete();
-                                            if (mounted) {
-                                              ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                SnackBar(
-                                                  content: const Text('Expense deleted'),
-                                                  action: SnackBarAction(
-                                                    label: 'UNDO',
-                                                    onPressed: () async {
-                                                      final box = Hive.box<Expense>('expenses_box');
-                                                      await box.add(deletedCopy);
-                                                      setState(() {});
-                                                    },
-                                                  ),
-                                                  duration: const Duration(seconds: 4),
-                                                ),
+                                            TextButton(
+                                              onPressed: () =>
+                                                  Navigator.pop(ctx, true),
+                                              child: const Text("Delete"),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                      return shouldDelete ?? false;
+                                    }
+                                  },
+                                  onDismissed: (direction) async {
+                                    final deletedCopy = e.copyWith();
+                                    await e.delete();
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).hideCurrentSnackBar();
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: const Text(
+                                            'Expense deleted',
+                                          ),
+                                          action: SnackBarAction(
+                                            label: 'UNDO',
+                                            onPressed: () async {
+                                              final box = Hive.box<Expense>(
+                                                'expenses_box',
                                               );
-                                            }
-                                          }
-                                        },
+                                              await box.add(deletedCopy);
+                                              setState(() {});
+                                            },
+                                          ),
+                                          duration: const Duration(seconds: 4),
+                                        ),
+                                      );
+                                    }
+                                  },
+                                  child: Card(
+                                    margin: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 6,
+                                    ),
+                                    child: ListTile(
+                                      onTap: () => openAddEditSheet(
+                                        expense: e,
+                                        isEarning: false,
                                       ),
-                                    ],
+                                      leading: CircleAvatar(
+                                        backgroundColor:
+                                            categoryColors[e.category] ??
+                                            Colors.blueGrey,
+                                        child: Icon(
+                                          categoryIcons[e.category] ??
+                                              Icons.money,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                      title: Text(
+                                        e.title.isNotEmpty
+                                            ? e.title
+                                            : e.category,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      subtitle: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            DateFormat.yMMMd().format(e.date),
+                                          ),
+                                        ],
+                                      ),
+
+                                      trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text(
+                                            '₹${e.amount.toStringAsFixed(2)}',
+                                          ),
+                                          const SizedBox(width: 8),
+                                          if (hasAutoReduce) ...[
+                                            GestureDetector(
+                                              onTap: () {
+                                                setState(() {
+                                                  // Toggle info card visibility
+                                                  _expandedExpenseId =
+                                                      _expandedExpenseId == e.id
+                                                      ? null
+                                                      : e.id;
+                                                });
+                                              },
+                                              child: const Icon(
+                                                Icons.info_outline,
+                                                color: Colors.blueAccent,
+                                                size: 18,
+                                              ),
+                                            ),
+                                          ],
+
+                                          Checkbox(
+                                            value: e.isPaid,
+                                            onChanged: (val) {
+                                              setState(() {
+                                                e.isPaid = val ?? false;
+                                                e.save();
+                                              });
+                                            },
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(
+                                              Icons.delete,
+                                              color: Colors.redAccent,
+                                            ),
+                                            onPressed: () async {
+                                              final confirmed =
+                                                  await showDialog<bool>(
+                                                    context: context,
+                                                    builder: (ctx) => AlertDialog(
+                                                      title: const Text(
+                                                        "Delete Expense?",
+                                                      ),
+                                                      content: const Text(
+                                                        "This action cannot be undone.",
+                                                      ),
+                                                      actions: [
+                                                        TextButton(
+                                                          onPressed: () =>
+                                                              Navigator.pop(
+                                                                ctx,
+                                                                false,
+                                                              ),
+                                                          child: const Text(
+                                                            "Cancel",
+                                                          ),
+                                                        ),
+                                                        TextButton(
+                                                          onPressed: () =>
+                                                              Navigator.pop(
+                                                                ctx,
+                                                                true,
+                                                              ),
+                                                          child: const Text(
+                                                            "Delete",
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  );
+                                              if (confirmed ?? false) {
+                                                final deletedCopy = e
+                                                    .copyWith();
+                                                await e.delete();
+                                                if (mounted) {
+                                                  ScaffoldMessenger.of(
+                                                    context,
+                                                  ).hideCurrentSnackBar();
+                                                  ScaffoldMessenger.of(
+                                                    context,
+                                                  ).showSnackBar(
+                                                    SnackBar(
+                                                      content: const Text(
+                                                        'Expense deleted',
+                                                      ),
+                                                      action: SnackBarAction(
+                                                        label: 'UNDO',
+                                                        onPressed: () async {
+                                                          final box =
+                                                              Hive.box<Expense>(
+                                                                'expenses_box',
+                                                              );
+                                                          await box.add(
+                                                            deletedCopy,
+                                                          );
+                                                          setState(() {});
+                                                        },
+                                                      ),
+                                                      duration: const Duration(
+                                                        seconds: 4,
+                                                      ),
+                                                    ),
+                                                  );
+                                                }
+                                              }
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    ),
                                   ),
                                 ),
-
-                            ),
+                              ),
+                            ],
                           );
                         },
                       ),
@@ -1213,8 +1317,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                         color: Colors.redAccent,
                                       ),
                                       onPressed: () async {
-                                        final confirmed =
-                                            await showDialog<bool>(
+                                        final confirmed = await showDialog<bool>(
                                           context: context,
                                           builder: (ctx) => AlertDialog(
                                             title: const Text(
@@ -1338,7 +1441,10 @@ class _MonthlyExpensesPageState extends State<MonthlyExpensesPage> {
               itemBuilder: (context, index) {
                 final e = _expenses[index];
                 return Card(
-                  margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                  margin: const EdgeInsets.symmetric(
+                    vertical: 6,
+                    horizontal: 8,
+                  ),
                   child: ListTile(
                     leading: CircleAvatar(
                       backgroundColor:
@@ -1393,6 +1499,457 @@ class _MonthlyExpensesPageState extends State<MonthlyExpensesPage> {
                 );
               },
             ),
+    );
+  }
+}
+
+class _AutoReduceInfoCard extends StatefulWidget {
+  final double dailyReduce;
+  final int totalDays;
+  final int daysDeducted;
+  final int remainingDays;
+  final double percent;
+
+  const _AutoReduceInfoCard({
+    required this.dailyReduce,
+    required this.totalDays,
+    required this.daysDeducted,
+    required this.remainingDays,
+    required this.percent,
+  });
+
+  @override
+  State<_AutoReduceInfoCard> createState() => _AutoReduceInfoCardState();
+}
+
+class _AutoReduceInfoCardState extends State<_AutoReduceInfoCard> {
+  bool _showInfo = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '₹${widget.dailyReduce.toStringAsFixed(0)}/day',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Colors.orangeAccent,
+                  fontWeight: FontWeight.w600,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            Text(
+              '${widget.percent.toStringAsFixed(0)}%',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.cyanAccent,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTapDown: (details) {
+                final box = context.findRenderObject() as RenderBox?;
+                if (box != null) {
+                  final pos = box.localToGlobal(Offset.zero);
+                  final size = box.size;
+                  final rect = Rect.fromLTWH(
+                    pos.dx,
+                    pos.dy,
+                    size.width,
+                    size.height,
+                  );
+
+                  // ✅ Use widget.<field> here
+                  FloatingInfoOverlay.show(
+                    context: context,
+                    targetRect: rect,
+                    title: "Auto Reduction Details",
+                    percent: widget.percent,
+                    daysDeducted: widget.daysDeducted,
+                    remainingDays: widget.remainingDays,
+                    totalDays: widget.totalDays,
+                  );
+                }
+              },
+              child: const Icon(
+                Icons.info_outline,
+                color: Colors.blueAccent,
+                size: 18,
+              ),
+            ),
+          ],
+        ),
+
+        // Optional inline AnimatedSwitcher (if you want inline info)
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          transitionBuilder: (child, animation) =>
+              ScaleTransition(scale: animation, child: child),
+          child: _showInfo
+              ? Padding(
+                  key: const ValueKey("infoGlassCard"),
+                  padding: const EdgeInsets.only(top: 10),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.25),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              "Auto Reduction Details",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: LinearProgressIndicator(
+                                value: widget.daysDeducted / widget.totalDays,
+                                minHeight: 6,
+                                backgroundColor: Colors.grey.withOpacity(0.3),
+                                color: Colors.cyanAccent,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  'Deducted: ${widget.daysDeducted} days',
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
+                                        color: Colors.greenAccent,
+                                        fontSize: 12,
+                                      ),
+                                ),
+                                Text(
+                                  'Remaining: ${widget.remainingDays} days',
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
+                                        color: Colors.redAccent,
+                                        fontSize: 12,
+                                      ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                )
+              : const SizedBox.shrink(),
+        ),
+      ],
+    );
+  }
+}
+
+class FloatingInfoOverlay {
+  static OverlayEntry? _currentEntry;
+
+  static void show({
+    required BuildContext context,
+    required Rect targetRect,
+    required String title,
+    required double percent,
+    required int daysDeducted,
+    required int remainingDays,
+    required int totalDays,
+  }) {
+    hide();
+
+    final overlay = Overlay.of(context);
+    if (overlay == null) return;
+
+    final size = MediaQuery.of(context).size;
+    final padding = MediaQuery.of(context).padding;
+    const double popupHeight = 160;
+    const double margin = 12;
+
+    // Space above/below
+    final spaceAbove = targetRect.top - padding.top - margin;
+    final spaceBelow =
+        size.height - targetRect.bottom - padding.bottom - margin;
+    final bool showAbove = spaceAbove > popupHeight || spaceAbove > spaceBelow;
+
+    // Calculate vertical placement
+    double top = showAbove
+        ? targetRect.top - popupHeight - margin
+        : targetRect.bottom + margin;
+
+    // Base popup width
+    double popupWidth = targetRect.width;
+
+    // Auto-shrink if popup is too wide
+    if (popupWidth > size.width - (margin * 2)) {
+      popupWidth = size.width - (margin * 2);
+    }
+
+    // Center horizontally by default
+    double left = targetRect.left + (targetRect.width / 2) - (popupWidth / 2);
+
+    // Auto-adjust if overflowing
+    if (left < margin) {
+      left = margin;
+    } else if (left + popupWidth > size.width - margin) {
+      // shift left if overflow right
+      final overflow = (left + popupWidth) - (size.width - margin);
+      left = (left - overflow).clamp(margin, size.width - popupWidth - margin);
+    }
+
+    // Clamp vertical position safely
+    top = top.clamp(
+      padding.top + margin,
+      size.height - popupHeight - padding.bottom - margin,
+    );
+
+    _currentEntry = OverlayEntry(
+      builder: (ctx) => Stack(
+        children: [
+          // Tap outside to close
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: hide,
+              behavior: HitTestBehavior.opaque,
+            ),
+          ),
+          // The popup itself
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+            left: left,
+            top: top,
+            width: popupWidth,
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 250),
+              opacity: 1,
+              child: Material(
+                color: Colors.transparent,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                    child: Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.6),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.2),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.4),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LinearProgressIndicator(
+                              value: daysDeducted / totalDays,
+                              minHeight: 6,
+                              backgroundColor: Colors.grey.withOpacity(0.3),
+                              color: Colors.cyanAccent,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                'Deducted: $daysDeducted days',
+                                style: const TextStyle(
+                                  color: Colors.greenAccent,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              Text(
+                                'Remaining: $remainingDays days',
+                                style: const TextStyle(
+                                  color: Colors.redAccent,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              onPressed: hide,
+                              child: const Text(
+                                'Close',
+                                style: TextStyle(color: Colors.cyanAccent),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    overlay.insert(_currentEntry!);
+  }
+
+  static void hide() {
+    _currentEntry?.remove();
+    _currentEntry = null;
+  }
+}
+
+class _TemporaryInfoCard extends StatelessWidget {
+  final String title;
+  final double percent;
+  final int daysDeducted;
+  final int remainingDays;
+  final int totalDays;
+  final double dailyReduce;
+  final VoidCallback onClose;
+
+  const _TemporaryInfoCard({
+    required this.title,
+    required this.percent,
+    required this.daysDeducted,
+    required this.remainingDays,
+    required this.totalDays,
+    required this.dailyReduce,
+    required this.onClose,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.65),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withOpacity(0.25)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.4),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 🔹 Title + Close Button
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white70, size: 18),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                onPressed: onClose,
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 6),
+
+          // 🔹 Daily rate & percentage
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '₹${dailyReduce.toStringAsFixed(0)}/day',
+                style: const TextStyle(
+                  color: Colors.orangeAccent,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Text(
+                '${percent.toStringAsFixed(0)}%',
+                style: const TextStyle(
+                  color: Colors.cyanAccent,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+          // 🔹 Progress bar
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: daysDeducted / totalDays,
+              minHeight: 6,
+              backgroundColor: Colors.grey.withOpacity(0.3),
+              color: Colors.cyanAccent,
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          // 🔹 Deducted / Remaining Info
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Deducted: $daysDeducted days',
+                style: const TextStyle(color: Colors.greenAccent, fontSize: 12),
+              ),
+              Text(
+                'Remaining: $remainingDays days',
+                style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
