@@ -34,7 +34,6 @@ class _MonthlyPageState extends State<MonthlyPage> {
   final Box<Expense> expenseBox = Hive.box<Expense>('expenses_box');
   final Box<Earning> earningBox = Hive.box<Earning>('earnings_box');
   String? _expandedExpenseId;
-  bool _showReceivedOnly = true; // ✅ show only received earnings by default
 
   late DateTime selectedMonth;
   MonthlyFilter _filter = MonthlyFilter.all;
@@ -66,14 +65,19 @@ class _MonthlyPageState extends State<MonthlyPage> {
   }
 
   double get totalEarningsForMonth {
-    return earningBox.values
+    final totalReceived = earningBox.values
         .where(
           (e) =>
               e.date.year == selectedMonth.year &&
               e.date.month == selectedMonth.month &&
-              e.isReceived, // ✅ count only received
+              e.isReceived,
         )
         .fold(0.0, (s, e) => s + e.amount);
+
+    // ✅ Deduct auto-reduced expense total
+    final adjustedEarnings = totalReceived - totalAutoReducedAmount;
+
+    return adjustedEarnings.clamp(0, double.infinity);
   }
 
   double displayedExpensesTotal(List<Expense> expenses) {
@@ -84,6 +88,25 @@ class _MonthlyPageState extends State<MonthlyPage> {
     return earnings
         .where((e) => e.isReceived) // ✅ Only received ones
         .fold(0.0, (s, e) => s + e.amount);
+  }
+
+  double get totalAutoReducedAmount {
+    double reduced = 0.0;
+
+    for (final e in expenseBox.values) {
+      if (e.autoReduceEnabled &&
+          e.date.year == selectedMonth.year &&
+          e.date.month == selectedMonth.month &&
+          (e.dailyReduce ?? 0) > 0 &&
+          (e.totalBudget ?? 0) > 0) {
+        final totalDays = (e.totalBudget! / e.dailyReduce!).floor();
+        final daysPassed = DateTime.now().difference(e.date).inDays;
+        final daysDeducted = min(daysPassed, totalDays);
+        reduced += daysDeducted * e.dailyReduce!;
+      }
+    }
+
+    return reduced;
   }
 
   double get remainingBalance => totalEarningsForMonth - totalExpensesForMonth;
@@ -819,6 +842,26 @@ class _MonthlyPageState extends State<MonthlyPage> {
                         ),
                       ),
                     ),
+                    // 🔹 Show auto reduction info (below earnings card)
+                    if (totalAutoReducedAmount > 0)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            const Icon(Icons.trending_down, color: Colors.orangeAccent, size: 16),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Auto Reduced: ₹${totalAutoReducedAmount.toStringAsFixed(2)}',
+                              style: const TextStyle(
+                                color: Colors.orangeAccent,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
 
                     // Expenses Card
                     Card(
