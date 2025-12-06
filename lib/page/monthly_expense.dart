@@ -34,10 +34,12 @@ class _MonthlyPageState extends State<MonthlyPage> {
   final Box<Expense> expenseBox = Hive.box<Expense>('expenses_box');
   final Box<Earning> earningBox = Hive.box<Earning>('earnings_box');
   String? _expandedExpenseId;
+  bool _showReceivedOnly = true; // ✅ show only received earnings by default
 
   late DateTime selectedMonth;
   MonthlyFilter _filter = MonthlyFilter.all;
   ExpenseStatusFilter _expenseStatusFilter = ExpenseStatusFilter.all;
+  EarningStatusFilter _earningStatusFilter = EarningStatusFilter.all;
 
   @override
   void initState() {
@@ -68,7 +70,8 @@ class _MonthlyPageState extends State<MonthlyPage> {
         .where(
           (e) =>
               e.date.year == selectedMonth.year &&
-              e.date.month == selectedMonth.month,
+              e.date.month == selectedMonth.month &&
+              e.isReceived, // ✅ count only received
         )
         .fold(0.0, (s, e) => s + e.amount);
   }
@@ -78,7 +81,9 @@ class _MonthlyPageState extends State<MonthlyPage> {
   }
 
   double displayedEarningsTotal(List<Earning> earnings) {
-    return earnings.fold(0.0, (s, e) => s + e.amount);
+    return earnings
+        .where((e) => e.isReceived) // ✅ Only received ones
+        .fold(0.0, (s, e) => s + e.amount);
   }
 
   double get remainingBalance => totalEarningsForMonth - totalExpensesForMonth;
@@ -236,7 +241,14 @@ class _MonthlyPageState extends State<MonthlyPage> {
       case MonthlyFilter.all:
         return earnings;
       case MonthlyFilter.income:
-        return earnings;
+        switch (_earningStatusFilter) {
+          case EarningStatusFilter.all:
+            return earnings;
+          case EarningStatusFilter.received:
+            return earnings.where((e) => e.isReceived).toList();
+          case EarningStatusFilter.pending:
+            return earnings.where((e) => !e.isReceived).toList();
+        }
       case MonthlyFilter.expense:
         return [];
     }
@@ -428,6 +440,45 @@ class _MonthlyPageState extends State<MonthlyPage> {
       );
     }
 
+    Widget buildEarningStatusButton(
+      EarningStatusFilter status,
+      IconData icon,
+      String label,
+    ) {
+      final selected = _earningStatusFilter == status;
+      final theme = Theme.of(context);
+      final colorBase = widget.themeMode == ThemeMode.dark
+          ? Colors.lightGreenAccent
+          : theme.colorScheme.primary;
+
+      return Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: OutlinedButton.icon(
+          onPressed: () {
+            setState(() {
+              _earningStatusFilter = status;
+            });
+          },
+          icon: Icon(icon, size: 18),
+          label: Text(label),
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            minimumSize: const Size(0, 34),
+            side: BorderSide(
+              color: selected ? colorBase : colorBase.withOpacity(0.4),
+            ),
+            backgroundColor: selected
+                ? colorBase.withOpacity(0.18)
+                : Colors.transparent,
+            foregroundColor: selected ? colorBase : null,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
+          ),
+        ),
+      );
+    }
+
     Widget buildExpenseStatusButton(
       ExpenseStatusFilter status,
       IconData icon,
@@ -578,6 +629,48 @@ class _MonthlyPageState extends State<MonthlyPage> {
                           ],
                         ),
                       ),
+                    ),
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 250),
+                      transitionBuilder: (child, animation) {
+                        return SizeTransition(
+                          sizeFactor: animation,
+                          axisAlignment: -1.0,
+                          child: FadeTransition(
+                            opacity: animation,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: _filter == MonthlyFilter.income
+                          ? Padding(
+                              key: const ValueKey('earningSubFilterRow'),
+                              padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+                              child: Center(
+                                child: SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      buildEarningStatusButton(
+                                        EarningStatusFilter.received,
+                                        Icons.check_circle,
+                                        'Received',
+                                      ),
+                                      buildEarningStatusButton(
+                                        EarningStatusFilter.pending,
+                                        Icons.pending_actions,
+                                        'Pending',
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            )
+                          : const SizedBox(
+                              key: ValueKey('earningSubFilterEmpty'),
+                              height: 0,
+                            ),
                     ),
 
                     // Animated Paid/Unpaid row (only when Expense selected)
@@ -1304,13 +1397,55 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                   ent.title.isNotEmpty ? ent.title : ent.source,
                                 ),
                                 subtitle: Text(
-                                  '${DateFormat.yMMMd().format(ent.date)} • ${ent.note}',
+                                  DateFormat.yMMMd().format(ent.date),
                                 ),
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Text('₹${ent.amount.toStringAsFixed(2)}'),
+                                    // ✅ Amount
+                                    Text(
+                                      '₹${ent.amount.toStringAsFixed(2)}',
+                                      style: TextStyle(
+                                        color: ent.isReceived
+                                            ? Colors.green
+                                            : Colors.orangeAccent,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                                     const SizedBox(width: 8),
+
+                                    // ✅ Received Toggle
+                                    ElevatedButton.icon(
+                                      onPressed: () {
+                                        setState(() {
+                                          ent.isReceived = !ent.isReceived;
+                                          ent.save();
+                                        });
+                                      },
+                                      icon: Icon(
+                                        ent.isReceived
+                                            ? Icons.check_circle
+                                            : Icons.pending_actions,
+                                        size: 18,
+                                      ),
+                                      label: Text(
+                                        ent.isReceived ? "Received" : "Pending",
+                                      ),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: ent.isReceived
+                                            ? Colors.green
+                                            : Colors.orangeAccent,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 6,
+                                        ),
+                                        minimumSize: const Size(0, 32),
+                                      ),
+                                    ),
+
+                                    const SizedBox(width: 8),
+
+                                    // ✅ Delete Button
                                     IconButton(
                                       icon: const Icon(
                                         Icons.delete,
@@ -1344,9 +1479,6 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                           final deletedCopy = ent.copyWith();
                                           await ent.delete();
                                           if (mounted) {
-                                            ScaffoldMessenger.of(
-                                              context,
-                                            ).hideCurrentSnackBar();
                                             ScaffoldMessenger.of(
                                               context,
                                             ).showSnackBar(

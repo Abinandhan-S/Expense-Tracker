@@ -174,8 +174,29 @@ class ExpenseAdapter extends TypeAdapter<Expense> {
   }
 }
 
-/// Earning model - separate box
+@HiveType(typeId: 1)
 class Earning extends HiveObject {
+  @HiveField(0)
+  String id;
+
+  @HiveField(1)
+  String title;
+
+  @HiveField(2)
+  double amount;
+
+  @HiveField(3)
+  String source;
+
+  @HiveField(4)
+  DateTime date;
+
+  @HiveField(5)
+  String note;
+
+  @HiveField(6)
+  bool isReceived; // ✅ New field
+
   Earning({
     required this.id,
     required this.title,
@@ -183,14 +204,8 @@ class Earning extends HiveObject {
     required this.source,
     required this.date,
     required this.note,
+    this.isReceived = true, // ✅ default to received
   });
-
-  String id;
-  String title;
-  double amount;
-  String source;
-  DateTime date;
-  String note;
 
   Earning copyWith({
     String? id,
@@ -199,6 +214,7 @@ class Earning extends HiveObject {
     String? source,
     DateTime? date,
     String? note,
+    bool? isReceived,
   }) {
     return Earning(
       id: id ?? this.id,
@@ -207,6 +223,7 @@ class Earning extends HiveObject {
       source: source ?? this.source,
       date: date ?? this.date,
       note: note ?? this.note,
+      isReceived: isReceived ?? this.isReceived,
     );
   }
 }

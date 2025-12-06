@@ -283,6 +283,7 @@ class _MainShellState extends State<MainShell> {
 // ======================= FILTER ENUMS ===========================
 enum MonthlyFilter { all, income, expense }
 enum ExpenseStatusFilter { all, paid, unpaid }
+enum EarningStatusFilter { all, received, pending }
 
 
 // ======================= ADD/EDIT SHEET =========================
