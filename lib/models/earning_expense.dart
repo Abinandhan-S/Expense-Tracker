@@ -68,6 +68,8 @@ class Expense extends HiveObject {
   @HiveField(13)
   int? reducedDaysCount; // 👈 how many days reduced so far
 
+  @HiveField(14)
+  int sortIndex = 0; // Default order
   // =========================
   // 🔁 Copy helper
   // =========================
