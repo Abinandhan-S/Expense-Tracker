@@ -27,19 +27,7 @@ void main() async {
   await Hive.openBox<CommonExpense>('common_expenses_box');
   await Hive.openBox('settings');
 
-  // Defaults for auto-reduction time (UTC)
-  final settings = Hive.box('settings');
-  if (!settings.containsKey('auto_reduce_hour')) {
-    settings.put('auto_reduce_hour', 23); // 23:55 UTC by default
-  }
-  if (!settings.containsKey('auto_reduce_minute')) {
-    settings.put('auto_reduce_minute', 55);
-  }
-
   await ensureRecurringSalaryFilled();
-  await applyDailyReductions(); // catch-up for missed days
-  scheduleDailyReduction(); // schedule daily auto-reduce at configured UTC time
-
   runApp(const ExpenseTrackerApp());
 }
 
@@ -138,30 +126,6 @@ Future<void> applyDailyReductions() async {
 
     await e.save();
   }
-}
-
-/// Schedules the next daily auto reduction at the configured UTC time.
-/// Safe to call multiple times; extra calls do no harm.
-Future<void> scheduleDailyReduction() async {
-  final settings = Hive.box('settings');
-  final userHour = settings.get('auto_reduce_hour', defaultValue: 23) as int;
-  final userMinute =
-      settings.get('auto_reduce_minute', defaultValue: 55) as int;
-
-  // ✅ Pure local-time scheduling
-  final now = DateTime.now(); // local device time
-  final next = DateTime(now.year, now.month, now.day, userHour, userMinute);
-  final nextTrigger = next.isBefore(now)
-      ? next.add(const Duration(days: 1))
-      : next;
-  final duration = nextTrigger.difference(now);
-
-  debugPrint('Next auto reduction scheduled at (Local): $nextTrigger');
-
-  Future.delayed(duration, () async {
-    await applyDailyReductions();
-    await scheduleDailyReduction(); // re-run for next day
-  });
 }
 
 // =============================================================
@@ -377,14 +341,6 @@ class _AddEditSheetState extends State<AddEditSheet> {
     _countdownTimer?.cancel();
     _dateController.dispose();
     super.dispose();
-  }
-
-  String _formatDuration(Duration d) {
-    final totalMinutes = d.inMinutes;
-    final hours = totalMinutes ~/ 60;
-    final minutes = totalMinutes % 60;
-    if (hours <= 0) return '${minutes}m';
-    return '${hours}h ${minutes}m';
   }
 
   /// 🔁 Update countdown based on local device time
@@ -606,73 +562,6 @@ class _AddEditSheetState extends State<AddEditSheet> {
               ),
 
             const SizedBox(height: 10),
-
-            if (!isE) ...[
-              SwitchListTile(
-                value: autoReduceEnabled,
-                title: const Text('Enable Daily Auto Reduce'),
-                subtitle: const Text(
-                  'Automatically deduct a fixed amount every day from this expense.',
-                  style: TextStyle(fontSize: 12),
-                ),
-                onChanged: (v) {
-                  setState(() {
-                    autoReduceEnabled = v;
-                  });
-                  if (v) {
-                    _startCountdownTimer();
-                  } else {
-                    _countdownTimer?.cancel();
-                    setState(() {
-                      _timeToNextReduction = null;
-                      _nextReductionTime = null;
-                    });
-                  }
-                },
-              ),
-              if (autoReduceEnabled) ...[
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 4,
-                  ),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: _nextReductionTime != null
-                        ? Text(
-                            'Next auto reduce at ${DateFormat('hh:mm a').format(_nextReductionTime!)} '
-                            '(${_formatDuration(_timeToNextReduction!)} remaining)',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          )
-                        : const Text('Calculating next auto reduce…'),
-                  ),
-                ),
-                TextFormField(
-                  initialValue: totalBudget > 0
-                      ? totalBudget.toString()
-                      : (amount > 0 ? amount.toString() : ''),
-                  decoration: const InputDecoration(
-                    labelText: 'Total Budget (e.g., 5500)',
-                  ),
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  onSaved: (v) => totalBudget = double.tryParse(v ?? '0') ?? 0,
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  initialValue: dailyReduce > 0 ? dailyReduce.toString() : '',
-                  decoration: const InputDecoration(
-                    labelText: 'Daily Deduct Amount (e.g., 180)',
-                  ),
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  onSaved: (v) => dailyReduce = double.tryParse(v ?? '0') ?? 0,
-                ),
-              ],
-              const SizedBox(height: 8),
-            ],
 
             TextFormField(
               readOnly: true,

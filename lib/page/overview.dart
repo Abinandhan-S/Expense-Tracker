@@ -27,19 +27,6 @@ class _OverviewPageState extends State<OverviewPage> {
   Map<String, Map<String, double>> computeMonthTotals() {
     final Map<String, Map<String, double>> totals = {};
 
-    // ✅ EXPENSES (consider auto-reduce totalBudget if enabled)
-    for (final e in expenseBox.values) {
-      final key = '${e.date.year}-${e.date.month.toString().padLeft(2, '0')}';
-      totals.putIfAbsent(key, () => {'expenses': 0.0, 'earnings': 0.0});
-
-      // Use totalBudget if auto-reduction is active and valid
-      final amountToUse = (e.autoReduceEnabled && (e.totalBudget ?? 0) > 0)
-          ? e.totalBudget!
-          : e.amount;
-
-      totals[key]!['expenses'] = totals[key]!['expenses']! + amountToUse;
-    }
-
     // ✅ EARNINGS (no reduction logic, full exact total)
     for (final e in earningBox.values) {
       final key = '${e.date.year}-${e.date.month.toString().padLeft(2, '0')}';

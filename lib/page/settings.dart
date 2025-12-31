@@ -39,21 +39,7 @@ class _SettingsPageState extends State<SettingsPage> {
             value: isDark,
             onChanged: (v) => widget.onToggleTheme(v),
           ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.access_time),
-            title: const Text('Daily Auto Reduction Time'),
-            subtitle: Text('Tap to change'),
-            onTap: () => _pickAutoReduceTime(context),
-          ),
 
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Text(
-              'Auto reduce runs once per local day at this time.\nIf the app was closed, missed days are applied on next launch.',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-          ),
           const Divider(),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -100,33 +86,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 }
 
-Future<void> _pickAutoReduceTime(BuildContext context) async {
-  final settings = Hive.box('settings');
-  final currentHour = settings.get('auto_reduce_hour', defaultValue: 23) as int;
-  final currentMinute =
-      settings.get('auto_reduce_minute', defaultValue: 55) as int;
-
-  final picked = await showTimePicker(
-    context: context,
-    initialTime: TimeOfDay(hour: currentHour, minute: currentMinute),
-    helpText: 'Select Local Time for Daily Reduction',
-  );
-
-  if (picked != null) {
-    await settings.put('auto_reduce_hour', picked.hour);
-    await settings.put('auto_reduce_minute', picked.minute);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Reduction time set to ${picked.format(context)} (Local Time)',
-        ),
-      ),
-    );
-
-    await scheduleDailyReduction(); // reschedule immediately
-  }
-}
 
 /// Global dialog for Recurring Salary (used from Settings)
 Future<void> showRecurringSalaryDialog(BuildContext context) async {

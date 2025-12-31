@@ -800,75 +800,6 @@ class _MonthlyPageState extends State<MonthlyPage> {
                         ),
                       ),
                     ),
-                    // 🔹 Earnings After Auto Reduction Card
-                    Card(
-                      margin: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Earnings After Reduction',
-                              style: TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                            const SizedBox(height: 8),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  '₹${totalEarningsAfterReduce.toStringAsFixed(2)}',
-                                  style: const TextStyle(
-                                    fontSize: 20,
-                                    color: Colors.teal,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    Text(
-                                      'Reduced by ₹${totalAutoReducedAmount.toStringAsFixed(2)}',
-                                      style: const TextStyle(
-                                        color: Colors.orangeAccent,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      'Original: ₹${totalEarningsBeforeReduce.toStringAsFixed(2)}',
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        color:
-                                            Theme.of(context).brightness ==
-                                                Brightness.dark
-                                            ? Colors
-                                                  .grey[400] // soft light grey for dark mode
-                                            : Colors
-                                                  .grey[700], // darker grey for light mode
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 6),
-                            LinearProgressIndicator(
-                              value: totalEarningsBeforeReduce == 0
-                                  ? 0
-                                  : totalEarningsAfterReduce /
-                                        totalEarningsBeforeReduce,
-                              minHeight: 6,
-                              backgroundColor: Colors.grey.withOpacity(0.3),
-                              color: Colors.tealAccent,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
 
                     // Earnings Card
                     Card(
@@ -1151,7 +1082,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                               ),
 
                               // 🔹 MAIN CARD WITH DRAG + DISMISS + CHECKBOX + DELETE
-                              ReorderableDragStartListener(
+                              ReorderableDelayedDragStartListener(
                                 index: i,
                                 key: Key(
                                   'drag_${e.id}_${e.date.millisecondsSinceEpoch}',
