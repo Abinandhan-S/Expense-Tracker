@@ -50,7 +50,7 @@ class _SettingsPageState extends State<SettingsPage> {
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Text(
-              'Auto reduce runs once per UTC day at this time.\nIf the app was closed, missed days are applied on next launch.',
+              'Auto reduce runs once per local day at this time.\nIf the app was closed, missed days are applied on next launch.',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ),
@@ -100,13 +100,11 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 }
 
-
-
-
 Future<void> _pickAutoReduceTime(BuildContext context) async {
   final settings = Hive.box('settings');
   final currentHour = settings.get('auto_reduce_hour', defaultValue: 23) as int;
-  final currentMinute = settings.get('auto_reduce_minute', defaultValue: 55) as int;
+  final currentMinute =
+      settings.get('auto_reduce_minute', defaultValue: 55) as int;
 
   final picked = await showTimePicker(
     context: context,
@@ -120,7 +118,9 @@ Future<void> _pickAutoReduceTime(BuildContext context) async {
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Reduction time set to ${picked.format(context)} (Local Time)'),
+        content: Text(
+          'Reduction time set to ${picked.format(context)} (Local Time)',
+        ),
       ),
     );
 
@@ -164,8 +164,9 @@ Future<void> showRecurringSalaryDialog(BuildContext context) async {
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
-                  validator: (v) =>
-                      v == null || double.tryParse(v) == null ? 'Invalid' : null,
+                  validator: (v) => v == null || double.tryParse(v) == null
+                      ? 'Invalid'
+                      : null,
                   onSaved: (v) => _amount = double.tryParse(v ?? '0') ?? 0,
                 ),
                 const SizedBox(height: 6),

@@ -64,8 +64,8 @@ class _MonthlyPageState extends State<MonthlyPage> {
         .fold(0.0, (s, e) => s + e.amount);
   }
 
-  double get totalEarningsForMonth {
-    final totalReceived = earningBox.values
+  double get totalEarningsBeforeReduce {
+    return earningBox.values
         .where(
           (e) =>
               e.date.year == selectedMonth.year &&
@@ -73,12 +73,15 @@ class _MonthlyPageState extends State<MonthlyPage> {
               e.isReceived,
         )
         .fold(0.0, (s, e) => s + e.amount);
-
-    // ✅ Deduct auto-reduced expense total
-    final adjustedEarnings = totalReceived - totalAutoReducedAmount;
-
-    return adjustedEarnings.clamp(0, double.infinity);
   }
+
+  double get totalEarningsAfterReduce {
+    final adjusted = totalEarningsBeforeReduce - totalAutoReducedAmount;
+    return adjusted.clamp(0, double.infinity);
+  }
+
+  double get remainingBalance =>
+      totalEarningsAfterReduce - totalExpensesForMonth;
 
   double displayedExpensesTotal(List<Expense> expenses) {
     return expenses.fold(0.0, (s, e) => s + e.amount);
@@ -100,16 +103,21 @@ class _MonthlyPageState extends State<MonthlyPage> {
           (e.dailyReduce ?? 0) > 0 &&
           (e.totalBudget ?? 0) > 0) {
         final totalDays = (e.totalBudget! / e.dailyReduce!).floor();
-        final daysPassed = DateTime.now().difference(e.date).inDays;
-        final daysDeducted = min(daysPassed, totalDays);
+
+        // normalize to midnight
+        final now = DateTime.now();
+        final start = DateTime(e.date.year, e.date.month, e.date.day);
+
+        // ✅ count all completed full days since start
+        final diffDays = now.difference(start).inDays;
+        final daysDeducted = min(max(diffDays, 0), totalDays);
+
         reduced += daysDeducted * e.dailyReduce!;
       }
     }
 
     return reduced;
   }
-
-  double get remainingBalance => totalEarningsForMonth - totalExpensesForMonth;
 
   void previousMonth() {
     final m = DateTime(selectedMonth.year, selectedMonth.month - 1);
@@ -463,23 +471,19 @@ class _MonthlyPageState extends State<MonthlyPage> {
       );
     }
 
-    Widget buildEarningStatusButton(
-      EarningStatusFilter status,
+    Widget buildExpenseStatusButton(
+      ExpenseStatusFilter status,
       IconData icon,
       String label,
     ) {
-      final selected = _earningStatusFilter == status;
-      final theme = Theme.of(context);
-      final colorBase = widget.themeMode == ThemeMode.dark
-          ? Colors.lightGreenAccent
-          : theme.colorScheme.primary;
-
+      final selected = _expenseStatusFilter == status;
+      final colorBase = isDark ? Colors.cyanAccent : theme.colorScheme.primary;
       return Padding(
         padding: const EdgeInsets.only(right: 8),
         child: OutlinedButton.icon(
           onPressed: () {
             setState(() {
-              _earningStatusFilter = status;
+              _expenseStatusFilter = status;
             });
           },
           icon: Icon(icon, size: 18),
@@ -502,19 +506,23 @@ class _MonthlyPageState extends State<MonthlyPage> {
       );
     }
 
-    Widget buildExpenseStatusButton(
-      ExpenseStatusFilter status,
+    Widget buildEarningStatusButton(
+      EarningStatusFilter status,
       IconData icon,
       String label,
     ) {
-      final selected = _expenseStatusFilter == status;
-      final colorBase = isDark ? Colors.cyanAccent : theme.colorScheme.primary;
+      final selected = _earningStatusFilter == status;
+      final isDark = widget.themeMode == ThemeMode.dark;
+      final theme = Theme.of(context);
+      final colorBase = isDark ? Colors.tealAccent : theme.colorScheme.primary;
+
       return Padding(
         padding: const EdgeInsets.only(right: 8),
         child: OutlinedButton.icon(
           onPressed: () {
             setState(() {
-              _expenseStatusFilter = status;
+              // Update the current filter
+              _earningStatusFilter = status;
             });
           },
           icon: Icon(icon, size: 18),
@@ -770,7 +778,6 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                   ),
                                 ),
                                 const SizedBox(height: 6),
-                                const Text('Earnings - Expenses'),
                               ],
                             ),
                             Column(
@@ -788,6 +795,75 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                   ),
                                 ),
                               ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    // 🔹 Earnings After Auto Reduction Card
+                    Card(
+                      margin: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Earnings After Reduction',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  '₹${totalEarningsAfterReduce.toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                    fontSize: 20,
+                                    color: Colors.teal,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      'Reduced by ₹${totalAutoReducedAmount.toStringAsFixed(2)}',
+                                      style: const TextStyle(
+                                        color: Colors.orangeAccent,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Original: ₹${totalEarningsBeforeReduce.toStringAsFixed(2)}',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color:
+                                            Theme.of(context).brightness ==
+                                                Brightness.dark
+                                            ? Colors
+                                                  .grey[400] // soft light grey for dark mode
+                                            : Colors
+                                                  .grey[700], // darker grey for light mode
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            LinearProgressIndicator(
+                              value: totalEarningsBeforeReduce == 0
+                                  ? 0
+                                  : totalEarningsAfterReduce /
+                                        totalEarningsBeforeReduce,
+                              minHeight: 6,
+                              backgroundColor: Colors.grey.withOpacity(0.3),
+                              color: Colors.tealAccent,
                             ),
                           ],
                         ),
@@ -822,7 +898,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                   ),
                                 ),
                                 const SizedBox(height: 4),
-                                const Text('Displayed earnings for this month'),
+                                const Text('Total Month Earning'),
                               ],
                             ),
                             ElevatedButton.icon(
@@ -845,11 +921,18 @@ class _MonthlyPageState extends State<MonthlyPage> {
                     // 🔹 Show auto reduction info (below earnings card)
                     if (totalAutoReducedAmount > 0)
                       Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 4,
+                        ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.end,
                           children: [
-                            const Icon(Icons.trending_down, color: Colors.orangeAccent, size: 16),
+                            const Icon(
+                              Icons.trending_down,
+                              color: Colors.orangeAccent,
+                              size: 16,
+                            ),
                             const SizedBox(width: 6),
                             Text(
                               'Auto Reduced: ₹${totalAutoReducedAmount.toStringAsFixed(2)}',
@@ -1009,12 +1092,22 @@ class _MonthlyPageState extends State<MonthlyPage> {
                           final int totalDays = hasAutoReduce
                               ? (e.totalBudget! / e.dailyReduce!).floor()
                               : 0;
-                          final int daysPassed = hasAutoReduce
-                              ? DateTime.now().difference(e.date).inDays
+                          final int diffDays = hasAutoReduce
+                              ? DateTime.now()
+                                    .difference(
+                                      DateTime(
+                                        e.date.year,
+                                        e.date.month,
+                                        e.date.day,
+                                      ),
+                                    )
+                                    .inDays
                               : 0;
+
                           final int daysDeducted = hasAutoReduce
-                              ? min(daysPassed, totalDays)
+                              ? min(max(diffDays, 0), totalDays)
                               : 0;
+
                           final int remainingDays = hasAutoReduce
                               ? max(totalDays - daysDeducted, 0)
                               : 0;
@@ -1458,7 +1551,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                     const SizedBox(width: 8),
 
                                     // ✅ Received Toggle
-                                    ElevatedButton.icon(
+                                    IconButton(
                                       onPressed: () {
                                         setState(() {
                                           ent.isReceived = !ent.isReceived;
@@ -1469,21 +1562,14 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                         ent.isReceived
                                             ? Icons.check_circle
                                             : Icons.pending_actions,
-                                        size: 18,
-                                      ),
-                                      label: Text(
-                                        ent.isReceived ? "Received" : "Pending",
-                                      ),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: ent.isReceived
+                                        color: ent.isReceived
                                             ? Colors.green
                                             : Colors.orangeAccent,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                          vertical: 6,
-                                        ),
-                                        minimumSize: const Size(0, 32),
+                                        size: 26,
                                       ),
+                                      tooltip: ent.isReceived
+                                          ? 'Received'
+                                          : 'Pending',
                                     ),
 
                                     const SizedBox(width: 8),
@@ -1851,7 +1937,6 @@ class FloatingInfoOverlay {
     hide();
 
     final overlay = Overlay.of(context);
-    if (overlay == null) return;
 
     final size = MediaQuery.of(context).size;
     final padding = MediaQuery.of(context).padding;

@@ -77,9 +77,7 @@ Future<void> ensureRecurringSalaryFilled() async {
     );
     if (!exists) {
       final id =
-          DateTime.now().millisecondsSinceEpoch.toString() +
-              '_' +
-              cursor.toIso8601String();
+          '${DateTime.now().millisecondsSinceEpoch}_${cursor.toIso8601String()}';
       earningsBox.add(
         Earning(
           id: id,
@@ -108,11 +106,11 @@ bool isSameMonthOrAfter(DateTime a, DateTime b) {
 // =============================================================
 // HELPER: AUTO DAILY REDUCTION FOR EXPENSES (UTC-BASED)
 // =============================================================
-DateTime _stripUtcDate(DateTime dt) => DateTime.utc(dt.year, dt.month, dt.day);
+DateTime _stripLocalDate(DateTime dt) => DateTime(dt.year, dt.month, dt.day);
 
 Future<void> applyDailyReductions() async {
   final expenseBox = Hive.box<Expense>('expenses_box');
-  final todayUtcDate = _stripUtcDate(DateTime.now().toUtc());
+  final todayLocalDate = _stripLocalDate(DateTime.now());
 
   for (final e in expenseBox.values) {
     if (!(e.autoReduceEnabled == true &&
@@ -121,16 +119,22 @@ Future<void> applyDailyReductions() async {
       continue;
     }
 
+    // Use existing field, but as LOCAL date
     final last = e.lastReducedDateUtc != null
-        ? _stripUtcDate(e.lastReducedDateUtc!)
-        : _stripUtcDate(e.date.toUtc());
+        ? _stripLocalDate(e.lastReducedDateUtc!)
+        : _stripLocalDate(e.date);
 
-    final daysSince = todayUtcDate.difference(last).inDays;
-    if (daysSince <= 0) continue;
+    final daysSince = todayLocalDate.difference(last).inDays;
 
-    e.amount = max(0, e.amount - (e.dailyReduce! * daysSince));;
-    e.lastReducedDateUtc = todayUtcDate;
-    e.reducedDaysCount = (e.reducedDaysCount ?? 0) + 1;
+    // ✅ Skip today – only reduce for days before today
+    if (daysSince <= 1) continue;
+
+    final missedDays = daysSince;
+    final reduction = e.dailyReduce! * missedDays;
+
+    e.amount = max(0, e.amount - reduction);
+    e.lastReducedDateUtc = todayLocalDate; // now storing local date here
+    e.reducedDaysCount = (e.reducedDaysCount ?? 0) + missedDays;
 
     await e.save();
   }
@@ -141,7 +145,8 @@ Future<void> applyDailyReductions() async {
 Future<void> scheduleDailyReduction() async {
   final settings = Hive.box('settings');
   final userHour = settings.get('auto_reduce_hour', defaultValue: 23) as int;
-  final userMinute = settings.get('auto_reduce_minute', defaultValue: 55) as int;
+  final userMinute =
+      settings.get('auto_reduce_minute', defaultValue: 55) as int;
 
   // ✅ Pure local-time scheduling
   final now = DateTime.now(); // local device time
@@ -206,7 +211,6 @@ class _ExpenseTrackerAppState extends State<ExpenseTrackerApp> {
       ),
       home: MainShell(onToggleTheme: toggleTheme, themeMode: _themeMode),
     );
-
   }
 }
 
@@ -258,9 +262,8 @@ class _MainShellState extends State<MainShell> {
 
     return Scaffold(
       body: pages[_selectedIndex],
-      
+
       bottomNavigationBar: BottomNavigationBar(
-        
         currentIndex: _selectedIndex,
         onTap: _onItemTapped,
         items: const [
@@ -273,7 +276,10 @@ class _MainShellState extends State<MainShell> {
             label: 'Overview',
           ),
           BottomNavigationBarItem(icon: Icon(Icons.group), label: 'Common'),
-          BottomNavigationBarItem(icon: Icon(Icons.settings), label: 'Settings'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.settings),
+            label: 'Settings',
+          ),
         ],
       ),
     );
@@ -282,9 +288,10 @@ class _MainShellState extends State<MainShell> {
 
 // ======================= FILTER ENUMS ===========================
 enum MonthlyFilter { all, income, expense }
-enum ExpenseStatusFilter { all, paid, unpaid }
-enum EarningStatusFilter { all, received, pending }
 
+enum ExpenseStatusFilter { all, paid, unpaid }
+
+enum EarningStatusFilter { all, received, pending }
 
 // ======================= ADD/EDIT SHEET =========================
 class AddEditSheet extends StatefulWidget {
@@ -434,14 +441,16 @@ class _AddEditSheetState extends State<AddEditSheet> {
         e.save();
       } else {
         final id = DateTime.now().millisecondsSinceEpoch.toString();
-        box.add(Earning(
-          id: id,
-          title: title,
-          amount: amount,
-          source: source,
-          date: date,
-          note: note,
-        ));
+        box.add(
+          Earning(
+            id: id,
+            title: title,
+            amount: amount,
+            source: source,
+            date: date,
+            note: note,
+          ),
+        );
       }
     } else {
       final box = Hive.box<Expense>('expenses_box');
@@ -481,7 +490,7 @@ class _AddEditSheetState extends State<AddEditSheet> {
         }
 
         e.save();
-      } 
+      }
       // =============================
       // 🧩 NEW EXPENSE (Add)
       // =============================
@@ -496,22 +505,26 @@ class _AddEditSheetState extends State<AddEditSheet> {
 
         final id = DateTime.now().millisecondsSinceEpoch.toString();
 
-        box.add(Expense(
-          id: id,
-          title: title,
-          amount: amount,
-          category: category,
-          date: date,
-          note: note,
-          isPaid: isPaid,
-          totalBudget: autoReduceEnabled ? totalBudget : null,
-          dailyReduce: autoReduceEnabled && dailyReduce > 0 ? dailyReduce : null,
-          autoReduceEnabled: autoReduceEnabled,
-          lastReducedDateUtc: null, // removed UTC
-          // ✅ NEW FIELDS
-          autoReduceStartDate: autoReduceEnabled ? DateTime.now() : null,
-          reducedDaysCount: autoReduceEnabled ? 0 : null,
-        ));
+        box.add(
+          Expense(
+            id: id,
+            title: title,
+            amount: amount,
+            category: category,
+            date: date,
+            note: note,
+            isPaid: isPaid,
+            totalBudget: autoReduceEnabled ? totalBudget : null,
+            dailyReduce: autoReduceEnabled && dailyReduce > 0
+                ? dailyReduce
+                : null,
+            autoReduceEnabled: autoReduceEnabled,
+            lastReducedDateUtc: null, // removed UTC
+            // ✅ NEW FIELDS
+            autoReduceStartDate: autoReduceEnabled ? DateTime.now() : null,
+            reducedDaysCount: autoReduceEnabled ? 0 : null,
+          ),
+        );
       }
     }
 
@@ -564,8 +577,9 @@ class _AddEditSheetState extends State<AddEditSheet> {
             TextFormField(
               initialValue: amount > 0 ? amount.toString() : '',
               decoration: const InputDecoration(labelText: 'Amount'),
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
               validator: (v) =>
                   v == null || double.tryParse(v) == null ? 'Invalid' : null,
               onSaved: (v) => amount = double.tryParse(v ?? '0') ?? 0,
@@ -586,7 +600,8 @@ class _AddEditSheetState extends State<AddEditSheet> {
               TextFormField(
                 initialValue: source,
                 decoration: const InputDecoration(
-                    labelText: 'Source (e.g., Salary, Bonus)'),
+                  labelText: 'Source (e.g., Salary, Bonus)',
+                ),
                 onSaved: (v) => source = v ?? '',
               ),
 
@@ -617,8 +632,10 @@ class _AddEditSheetState extends State<AddEditSheet> {
               ),
               if (autoReduceEnabled) ...[
                 Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: _nextReductionTime != null
@@ -634,22 +651,24 @@ class _AddEditSheetState extends State<AddEditSheet> {
                   initialValue: totalBudget > 0
                       ? totalBudget.toString()
                       : (amount > 0 ? amount.toString() : ''),
-                  decoration:
-                      const InputDecoration(labelText: 'Total Budget (e.g., 5500)'),
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  onSaved: (v) =>
-                      totalBudget = double.tryParse(v ?? '0') ?? 0,
+                  decoration: const InputDecoration(
+                    labelText: 'Total Budget (e.g., 5500)',
+                  ),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  onSaved: (v) => totalBudget = double.tryParse(v ?? '0') ?? 0,
                 ),
                 const SizedBox(height: 8),
                 TextFormField(
                   initialValue: dailyReduce > 0 ? dailyReduce.toString() : '',
                   decoration: const InputDecoration(
-                      labelText: 'Daily Deduct Amount (e.g., 180)'),
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  onSaved: (v) =>
-                      dailyReduce = double.tryParse(v ?? '0') ?? 0,
+                    labelText: 'Daily Deduct Amount (e.g., 180)',
+                  ),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  onSaved: (v) => dailyReduce = double.tryParse(v ?? '0') ?? 0,
                 ),
               ],
               const SizedBox(height: 8),
