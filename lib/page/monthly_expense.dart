@@ -38,6 +38,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
   late DateTime selectedMonth;
   MonthlyFilter _filter = MonthlyFilter.all;
   ExpenseStatusFilter _expenseStatusFilter = ExpenseStatusFilter.all;
+  EarningStatusFilter _earningStatusFilter = EarningStatusFilter.all;
 
   @override
   void initState() {
@@ -63,25 +64,60 @@ class _MonthlyPageState extends State<MonthlyPage> {
         .fold(0.0, (s, e) => s + e.amount);
   }
 
-  double get totalEarningsForMonth {
+  double get totalEarningsBeforeReduce {
     return earningBox.values
         .where(
           (e) =>
               e.date.year == selectedMonth.year &&
-              e.date.month == selectedMonth.month,
+              e.date.month == selectedMonth.month &&
+              e.isReceived,
         )
         .fold(0.0, (s, e) => s + e.amount);
   }
+
+  double get totalEarningsAfterReduce {
+    final adjusted = totalEarningsBeforeReduce - totalAutoReducedAmount;
+    return adjusted.clamp(0, double.infinity);
+  }
+
+  double get remainingBalance =>
+      totalEarningsAfterReduce - totalExpensesForMonth;
 
   double displayedExpensesTotal(List<Expense> expenses) {
     return expenses.fold(0.0, (s, e) => s + e.amount);
   }
 
   double displayedEarningsTotal(List<Earning> earnings) {
-    return earnings.fold(0.0, (s, e) => s + e.amount);
+    return earnings
+        .where((e) => e.isReceived) // ✅ Only received ones
+        .fold(0.0, (s, e) => s + e.amount);
   }
 
-  double get remainingBalance => totalEarningsForMonth - totalExpensesForMonth;
+  double get totalAutoReducedAmount {
+    double reduced = 0.0;
+
+    for (final e in expenseBox.values) {
+      if (e.autoReduceEnabled &&
+          e.date.year == selectedMonth.year &&
+          e.date.month == selectedMonth.month &&
+          (e.dailyReduce ?? 0) > 0 &&
+          (e.totalBudget ?? 0) > 0) {
+        final totalDays = (e.totalBudget! / e.dailyReduce!).floor();
+
+        // normalize to midnight
+        final now = DateTime.now();
+        final start = DateTime(e.date.year, e.date.month, e.date.day);
+
+        // ✅ count all completed full days since start
+        final diffDays = now.difference(start).inDays;
+        final daysDeducted = min(max(diffDays, 0), totalDays);
+
+        reduced += daysDeducted * e.dailyReduce!;
+      }
+    }
+
+    return reduced;
+  }
 
   void previousMonth() {
     final m = DateTime(selectedMonth.year, selectedMonth.month - 1);
@@ -236,7 +272,14 @@ class _MonthlyPageState extends State<MonthlyPage> {
       case MonthlyFilter.all:
         return earnings;
       case MonthlyFilter.income:
-        return earnings;
+        switch (_earningStatusFilter) {
+          case EarningStatusFilter.all:
+            return earnings;
+          case EarningStatusFilter.received:
+            return earnings.where((e) => e.isReceived).toList();
+          case EarningStatusFilter.pending:
+            return earnings.where((e) => !e.isReceived).toList();
+        }
       case MonthlyFilter.expense:
         return [];
     }
@@ -463,6 +506,45 @@ class _MonthlyPageState extends State<MonthlyPage> {
       );
     }
 
+    Widget buildEarningStatusButton(
+      EarningStatusFilter status,
+      IconData icon,
+      String label,
+    ) {
+      final selected = _earningStatusFilter == status;
+      final isDark = widget.themeMode == ThemeMode.dark;
+      final theme = Theme.of(context);
+      final colorBase = isDark ? Colors.tealAccent : theme.colorScheme.primary;
+
+      return Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: OutlinedButton.icon(
+          onPressed: () {
+            setState(() {
+              // Update the current filter
+              _earningStatusFilter = status;
+            });
+          },
+          icon: Icon(icon, size: 18),
+          label: Text(label),
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            minimumSize: const Size(0, 34),
+            side: BorderSide(
+              color: selected ? colorBase : colorBase.withOpacity(0.4),
+            ),
+            backgroundColor: selected
+                ? colorBase.withOpacity(0.18)
+                : Colors.transparent,
+            foregroundColor: selected ? colorBase : null,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Expense Tracker'),
@@ -579,6 +661,48 @@ class _MonthlyPageState extends State<MonthlyPage> {
                         ),
                       ),
                     ),
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 250),
+                      transitionBuilder: (child, animation) {
+                        return SizeTransition(
+                          sizeFactor: animation,
+                          axisAlignment: -1.0,
+                          child: FadeTransition(
+                            opacity: animation,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: _filter == MonthlyFilter.income
+                          ? Padding(
+                              key: const ValueKey('earningSubFilterRow'),
+                              padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+                              child: Center(
+                                child: SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      buildEarningStatusButton(
+                                        EarningStatusFilter.received,
+                                        Icons.check_circle,
+                                        'Received',
+                                      ),
+                                      buildEarningStatusButton(
+                                        EarningStatusFilter.pending,
+                                        Icons.pending_actions,
+                                        'Pending',
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            )
+                          : const SizedBox(
+                              key: ValueKey('earningSubFilterEmpty'),
+                              height: 0,
+                            ),
+                    ),
 
                     // Animated Paid/Unpaid row (only when Expense selected)
                     AnimatedSwitcher(
@@ -654,7 +778,6 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                   ),
                                 ),
                                 const SizedBox(height: 6),
-                                const Text('Earnings - Expenses'),
                               ],
                             ),
                             Column(
@@ -672,6 +795,75 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                   ),
                                 ),
                               ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    // 🔹 Earnings After Auto Reduction Card
+                    Card(
+                      margin: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Earnings After Reduction',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  '₹${totalEarningsAfterReduce.toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                    fontSize: 20,
+                                    color: Colors.teal,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      'Reduced by ₹${totalAutoReducedAmount.toStringAsFixed(2)}',
+                                      style: const TextStyle(
+                                        color: Colors.orangeAccent,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Original: ₹${totalEarningsBeforeReduce.toStringAsFixed(2)}',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color:
+                                            Theme.of(context).brightness ==
+                                                Brightness.dark
+                                            ? Colors
+                                                  .grey[400] // soft light grey for dark mode
+                                            : Colors
+                                                  .grey[700], // darker grey for light mode
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            LinearProgressIndicator(
+                              value: totalEarningsBeforeReduce == 0
+                                  ? 0
+                                  : totalEarningsAfterReduce /
+                                        totalEarningsBeforeReduce,
+                              minHeight: 6,
+                              backgroundColor: Colors.grey.withOpacity(0.3),
+                              color: Colors.tealAccent,
                             ),
                           ],
                         ),
@@ -706,7 +898,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                   ),
                                 ),
                                 const SizedBox(height: 4),
-                                const Text('Displayed earnings for this month'),
+                                const Text('Total Month Earning'),
                               ],
                             ),
                             ElevatedButton.icon(
@@ -726,6 +918,33 @@ class _MonthlyPageState extends State<MonthlyPage> {
                         ),
                       ),
                     ),
+                    // 🔹 Show auto reduction info (below earnings card)
+                    if (totalAutoReducedAmount > 0)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 4,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            const Icon(
+                              Icons.trending_down,
+                              color: Colors.orangeAccent,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Auto Reduced: ₹${totalAutoReducedAmount.toStringAsFixed(2)}',
+                              style: const TextStyle(
+                                color: Colors.orangeAccent,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
 
                     // Expenses Card
                     Card(
@@ -873,12 +1092,22 @@ class _MonthlyPageState extends State<MonthlyPage> {
                           final int totalDays = hasAutoReduce
                               ? (e.totalBudget! / e.dailyReduce!).floor()
                               : 0;
-                          final int daysPassed = hasAutoReduce
-                              ? DateTime.now().difference(e.date).inDays
+                          final int diffDays = hasAutoReduce
+                              ? DateTime.now()
+                                    .difference(
+                                      DateTime(
+                                        e.date.year,
+                                        e.date.month,
+                                        e.date.day,
+                                      ),
+                                    )
+                                    .inDays
                               : 0;
+
                           final int daysDeducted = hasAutoReduce
-                              ? min(daysPassed, totalDays)
+                              ? min(max(diffDays, 0), totalDays)
                               : 0;
+
                           final int remainingDays = hasAutoReduce
                               ? max(totalDays - daysDeducted, 0)
                               : 0;
@@ -1304,13 +1533,48 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                   ent.title.isNotEmpty ? ent.title : ent.source,
                                 ),
                                 subtitle: Text(
-                                  '${DateFormat.yMMMd().format(ent.date)} • ${ent.note}',
+                                  DateFormat.yMMMd().format(ent.date),
                                 ),
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Text('₹${ent.amount.toStringAsFixed(2)}'),
+                                    // ✅ Amount
+                                    Text(
+                                      '₹${ent.amount.toStringAsFixed(2)}',
+                                      style: TextStyle(
+                                        color: ent.isReceived
+                                            ? Colors.green
+                                            : Colors.orangeAccent,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                                     const SizedBox(width: 8),
+
+                                    // ✅ Received Toggle
+                                    IconButton(
+                                      onPressed: () {
+                                        setState(() {
+                                          ent.isReceived = !ent.isReceived;
+                                          ent.save();
+                                        });
+                                      },
+                                      icon: Icon(
+                                        ent.isReceived
+                                            ? Icons.check_circle
+                                            : Icons.pending_actions,
+                                        color: ent.isReceived
+                                            ? Colors.green
+                                            : Colors.orangeAccent,
+                                        size: 26,
+                                      ),
+                                      tooltip: ent.isReceived
+                                          ? 'Received'
+                                          : 'Pending',
+                                    ),
+
+                                    const SizedBox(width: 8),
+
+                                    // ✅ Delete Button
                                     IconButton(
                                       icon: const Icon(
                                         Icons.delete,
@@ -1344,9 +1608,6 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                           final deletedCopy = ent.copyWith();
                                           await ent.delete();
                                           if (mounted) {
-                                            ScaffoldMessenger.of(
-                                              context,
-                                            ).hideCurrentSnackBar();
                                             ScaffoldMessenger.of(
                                               context,
                                             ).showSnackBar(
@@ -1676,7 +1937,6 @@ class FloatingInfoOverlay {
     hide();
 
     final overlay = Overlay.of(context);
-    if (overlay == null) return;
 
     final size = MediaQuery.of(context).size;
     final padding = MediaQuery.of(context).padding;

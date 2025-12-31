@@ -69,7 +69,9 @@ class Expense extends HiveObject {
   int? reducedDaysCount; // 👈 how many days reduced so far
 
   @HiveField(14)
-  int sortIndex = 0; // Default order
+  int sortIndex = 0;
+
+  get lastReducedLocalKey => null; // Default order
   // =========================
   // 🔁 Copy helper
   // =========================
@@ -134,8 +136,10 @@ class ExpenseAdapter extends TypeAdapter<Expense> {
       dailyReduce = reader.readDouble();
       final lastMs = reader.readInt();
       if (lastMs != 0) {
-        lastReducedDateUtc =
-            DateTime.fromMillisecondsSinceEpoch(lastMs, isUtc: true);
+        lastReducedDateUtc = DateTime.fromMillisecondsSinceEpoch(
+          lastMs,
+          isUtc: true,
+        );
       }
     } catch (_) {
       // Old entries won't have these fields.
@@ -174,8 +178,29 @@ class ExpenseAdapter extends TypeAdapter<Expense> {
   }
 }
 
-/// Earning model - separate box
+@HiveType(typeId: 1)
 class Earning extends HiveObject {
+  @HiveField(0)
+  String id;
+
+  @HiveField(1)
+  String title;
+
+  @HiveField(2)
+  double amount;
+
+  @HiveField(3)
+  String source;
+
+  @HiveField(4)
+  DateTime date;
+
+  @HiveField(5)
+  String note;
+
+  @HiveField(6)
+  bool isReceived; // ✅ New field
+
   Earning({
     required this.id,
     required this.title,
@@ -183,14 +208,8 @@ class Earning extends HiveObject {
     required this.source,
     required this.date,
     required this.note,
+    this.isReceived = true, // ✅ default to received
   });
-
-  String id;
-  String title;
-  double amount;
-  String source;
-  DateTime date;
-  String note;
 
   Earning copyWith({
     String? id,
@@ -199,6 +218,7 @@ class Earning extends HiveObject {
     String? source,
     DateTime? date,
     String? note,
+    bool? isReceived,
   }) {
     return Earning(
       id: id ?? this.id,
@@ -207,6 +227,7 @@ class Earning extends HiveObject {
       source: source ?? this.source,
       date: date ?? this.date,
       note: note ?? this.note,
+      isReceived: isReceived ?? this.isReceived,
     );
   }
 }
@@ -217,13 +238,32 @@ class EarningAdapter extends TypeAdapter<Earning> {
 
   @override
   Earning read(BinaryReader reader) {
+    // read values in same order as write()
+    final id = reader.readString();
+    final title = reader.readString();
+    final amount = reader.readDouble();
+    final source = reader.readString();
+    final date = DateTime.fromMillisecondsSinceEpoch(reader.readInt());
+    final note = reader.readString();
+
+    // ✅ Try to read new field safely (backward compatibility)
+    bool isReceived = true;
+    if (reader.availableBytes > 0) {
+      try {
+        isReceived = reader.readBool();
+      } catch (_) {
+        isReceived = true; // fallback for older records
+      }
+    }
+
     return Earning(
-      id: reader.readString(),
-      title: reader.readString(),
-      amount: reader.readDouble(),
-      source: reader.readString(),
-      date: DateTime.fromMillisecondsSinceEpoch(reader.readInt()),
-      note: reader.readString(),
+      id: id,
+      title: title,
+      amount: amount,
+      source: source,
+      date: date,
+      note: note,
+      isReceived: isReceived,
     );
   }
 
@@ -235,5 +275,6 @@ class EarningAdapter extends TypeAdapter<Earning> {
     writer.writeString(obj.source);
     writer.writeInt(obj.date.millisecondsSinceEpoch);
     writer.writeString(obj.note);
+    writer.writeBool(obj.isReceived); // ✅ Persist this now
   }
 }
