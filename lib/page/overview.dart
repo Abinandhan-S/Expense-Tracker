@@ -23,15 +23,30 @@ class _OverviewPageState extends State<OverviewPage> {
   final Box<Expense> expenseBox = Hive.box<Expense>('expenses_box');
   final Box<Earning> earningBox = Hive.box<Earning>('earnings_box');
 
-  /// ✅ Compute raw totals for each month (no reduction)
+  /// ✅ Compute raw totals for each month (earnings + expenses)
   Map<String, Map<String, double>> computeMonthTotals() {
     final Map<String, Map<String, double>> totals = {};
 
-    // ✅ EARNINGS (no reduction logic, full exact total)
+    // -----------------------------
+    // ✅ EARNINGS
+    // -----------------------------
     for (final e in earningBox.values) {
       final key = '${e.date.year}-${e.date.month.toString().padLeft(2, '0')}';
+
       totals.putIfAbsent(key, () => {'expenses': 0.0, 'earnings': 0.0});
+
       totals[key]!['earnings'] = totals[key]!['earnings']! + e.amount;
+    }
+
+    // -----------------------------
+    // ✅ EXPENSES
+    // -----------------------------
+    for (final e in expenseBox.values) {
+      final key = '${e.date.year}-${e.date.month.toString().padLeft(2, '0')}';
+
+      totals.putIfAbsent(key, () => {'expenses': 0.0, 'earnings': 0.0});
+
+      totals[key]!['expenses'] = totals[key]!['expenses']! + e.amount;
     }
 
     return totals;
@@ -64,8 +79,36 @@ class _OverviewPageState extends State<OverviewPage> {
     if (keys.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text('Overview')),
-        body: const Center(
-          child: Text('No transactions yet. Add some expenses or earnings!'),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              Icon(
+                Icons.receipt_long,
+                size: 64,
+                color: Colors.grey,
+              ),
+              SizedBox(height: 16),
+              Text(
+                'No transactions yet',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Add some expenses or earnings!',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
         ),
       );
     }
