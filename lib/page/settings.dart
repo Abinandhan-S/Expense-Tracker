@@ -86,7 +86,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 }
 
-
 /// Global dialog for Recurring Salary (used from Settings)
 Future<void> showRecurringSalaryDialog(BuildContext context) async {
   final settings = Hive.box('settings');
@@ -95,8 +94,8 @@ Future<void> showRecurringSalaryDialog(BuildContext context) async {
   final amount = (settings.get('recurring_amount', defaultValue: 0.0) as num)
       .toDouble();
 
-  bool _enabled = enabled;
-  double _amount = amount;
+  bool enabled0 = enabled;
+  double amount0 = amount;
   final formKey = GlobalKey<FormState>();
 
   await showDialog(
@@ -111,12 +110,12 @@ Future<void> showRecurringSalaryDialog(BuildContext context) async {
               mainAxisSize: MainAxisSize.min,
               children: [
                 SwitchListTile(
-                  value: _enabled,
+                  value: enabled0,
                   title: const Text('Enable recurring salary'),
-                  onChanged: (v) => setSt(() => _enabled = v),
+                  onChanged: (v) => setSt(() => enabled0 = v),
                 ),
                 TextFormField(
-                  initialValue: _amount > 0 ? _amount.toString() : '',
+                  initialValue: amount0 > 0 ? amount0.toString() : '',
                   decoration: const InputDecoration(
                     labelText: 'Amount (monthly)',
                   ),
@@ -126,7 +125,7 @@ Future<void> showRecurringSalaryDialog(BuildContext context) async {
                   validator: (v) => v == null || double.tryParse(v) == null
                       ? 'Invalid'
                       : null,
-                  onSaved: (v) => _amount = double.tryParse(v ?? '0') ?? 0,
+                  onSaved: (v) => amount0 = double.tryParse(v ?? '0') ?? 0,
                 ),
                 const SizedBox(height: 6),
                 const Text(
@@ -146,15 +145,15 @@ Future<void> showRecurringSalaryDialog(BuildContext context) async {
           onPressed: () {
             final form = formKey.currentState;
             form?.save();
-            if (_enabled && _amount <= 0) {
+            if (enabled0 && amount0 <= 0) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Enter valid amount')),
               );
               return;
             }
-            settings.put('recurring_enabled', _enabled);
-            settings.put('recurring_amount', _amount);
-            if (_enabled) {
+            settings.put('recurring_enabled', enabled0);
+            settings.put('recurring_amount', amount0);
+            if (enabled0) {
               final now = DateTime.now();
               final prev = DateTime(now.year, now.month - 1);
               settings.put(

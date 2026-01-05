@@ -84,27 +84,17 @@ class _OverviewPageState extends State<OverviewPage> {
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: const [
-              Icon(
-                Icons.receipt_long,
-                size: 64,
-                color: Colors.grey,
-              ),
+              Icon(Icons.receipt_long, size: 64, color: Colors.grey),
               SizedBox(height: 16),
               Text(
                 'No transactions yet',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 textAlign: TextAlign.center,
               ),
               SizedBox(height: 8),
               Text(
                 'Add some expenses or earnings!',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Colors.grey,
-                ),
+                style: TextStyle(fontSize: 14, color: Colors.grey),
                 textAlign: TextAlign.center,
               ),
             ],
@@ -236,7 +226,7 @@ class _OverviewPageState extends State<OverviewPage> {
                   ),
                 ),
               );
-            }).toList(),
+            }),
             const SizedBox(height: 12),
           ],
         ),

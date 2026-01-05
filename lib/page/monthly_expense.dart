@@ -394,7 +394,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
       );
       if (alreadyExists) continue;
 
-      final id = DateTime.now().millisecondsSinceEpoch.toString() + '_' + ce.id;
+      final id = '${DateTime.now().millisecondsSinceEpoch}_${ce.id}';
       final dateToUse = DateTime(selectedMonth.year, selectedMonth.month, 1);
 
       expensesBox.add(
@@ -968,7 +968,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                     ],
                                   ),
                                 );
-                              }).toList(),
+                              }),
                             ],
                           ),
                         ),
@@ -1715,7 +1715,7 @@ class _AutoReduceInfoCard extends StatefulWidget {
 }
 
 class _AutoReduceInfoCardState extends State<_AutoReduceInfoCard> {
-  bool _showInfo = false;
+  final bool _showInfo = false;
 
   @override
   Widget build(BuildContext context) {
