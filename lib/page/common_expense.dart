@@ -255,7 +255,7 @@ class _AddCommonExpenseSheetState extends State<AddCommonExpenseSheet> {
               ),
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(
-                value: category,
+                initialValue: category,
                 items: defaultCategories
                     .map((c) => DropdownMenuItem(value: c, child: Text(c)))
                     .toList(),

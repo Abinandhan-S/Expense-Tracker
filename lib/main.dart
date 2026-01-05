@@ -27,19 +27,7 @@ void main() async {
   await Hive.openBox<CommonExpense>('common_expenses_box');
   await Hive.openBox('settings');
 
-  // Defaults for auto-reduction time (UTC)
-  final settings = Hive.box('settings');
-  if (!settings.containsKey('auto_reduce_hour')) {
-    settings.put('auto_reduce_hour', 23); // 23:55 UTC by default
-  }
-  if (!settings.containsKey('auto_reduce_minute')) {
-    settings.put('auto_reduce_minute', 55);
-  }
-
   await ensureRecurringSalaryFilled();
-  await applyDailyReductions(); // catch-up for missed days
-  scheduleDailyReduction(); // schedule daily auto-reduce at configured UTC time
-
   runApp(const ExpenseTrackerApp());
 }
 
@@ -138,30 +126,6 @@ Future<void> applyDailyReductions() async {
 
     await e.save();
   }
-}
-
-/// Schedules the next daily auto reduction at the configured UTC time.
-/// Safe to call multiple times; extra calls do no harm.
-Future<void> scheduleDailyReduction() async {
-  final settings = Hive.box('settings');
-  final userHour = settings.get('auto_reduce_hour', defaultValue: 23) as int;
-  final userMinute =
-      settings.get('auto_reduce_minute', defaultValue: 55) as int;
-
-  // ✅ Pure local-time scheduling
-  final now = DateTime.now(); // local device time
-  final next = DateTime(now.year, now.month, now.day, userHour, userMinute);
-  final nextTrigger = next.isBefore(now)
-      ? next.add(const Duration(days: 1))
-      : next;
-  final duration = nextTrigger.difference(now);
-
-  debugPrint('Next auto reduction scheduled at (Local): $nextTrigger');
-
-  Future.delayed(duration, () async {
-    await applyDailyReductions();
-    await scheduleDailyReduction(); // re-run for next day
-  });
 }
 
 // =============================================================
@@ -315,118 +279,88 @@ class AddEditSheet extends StatefulWidget {
 class _AddEditSheetState extends State<AddEditSheet> {
   final _formKey = GlobalKey<FormState>();
 
-  late String title;
-  late double amount;
-  late DateTime date;
-  late String note;
-  late TextEditingController _dateController;
-
   late String category;
   late bool isPaid;
   late String source;
+  late DateTime date;
 
   late double totalBudget;
   late double dailyReduce;
   late bool autoReduceEnabled;
 
+  late TextEditingController _titleController;
+  late TextEditingController _amountController;
+  late TextEditingController _noteController;
+  late TextEditingController _dateController;
+
   Timer? _countdownTimer;
-  Duration? _timeToNextReduction;
-  DateTime? _nextReductionTime; // ✅ local next trigger time
 
   @override
   void initState() {
     super.initState();
+
     if (widget.isEarning) {
       final e = widget.earning;
-      title = e?.title ?? '';
-      amount = e?.amount ?? 0;
-      source = e?.source ?? 'Salary';
-      date = e?.date ?? DateTime.now();
-      note = e?.note ?? '';
-      _dateController = TextEditingController(
-        text: DateFormat.yMd().format(date),
+      _titleController = TextEditingController(text: e?.title ?? 'Salary');
+      _amountController = TextEditingController(
+        text: e != null ? e.amount.toString() : '',
       );
+      _noteController = TextEditingController(text: e?.note ?? '');
+      source = e?.source ?? 'Salary';
       category = defaultCategories.first;
       isPaid = false;
+      autoReduceEnabled = false;
       totalBudget = 0;
       dailyReduce = 0;
-      autoReduceEnabled = false;
+      date = e?.date ?? DateTime.now();
     } else {
       final e = widget.expense;
-      title = e?.title ?? '';
-      amount = e?.amount ?? 0;
+      _titleController = TextEditingController(text: e?.title ?? '');
+      _amountController = TextEditingController(
+        text: e != null ? e.amount.toString() : '',
+      );
+      _noteController = TextEditingController(text: e?.note ?? '');
       category = e?.category ?? defaultCategories.first;
-      date = e?.date ?? DateTime.now();
-      note = e?.note ?? '';
       isPaid = e?.isPaid ?? false;
+      autoReduceEnabled = e?.autoReduceEnabled ?? false;
       totalBudget = e?.totalBudget ?? (e?.amount ?? 0);
       dailyReduce = e?.dailyReduce ?? 0;
-      autoReduceEnabled = e?.autoReduceEnabled ?? false;
-
       source = 'Salary';
-      _dateController = TextEditingController(
-        text: DateFormat.yMd().format(date),
-      );
-
-      if (autoReduceEnabled) _startCountdownTimer();
+      date = e?.date ?? DateTime.now();
     }
+
+    _dateController = TextEditingController(
+      text: DateFormat.yMd().format(date),
+    );
   }
 
   @override
   void dispose() {
-    _countdownTimer?.cancel();
+    _titleController.dispose();
+    _amountController.dispose();
+    _noteController.dispose();
     _dateController.dispose();
+    _countdownTimer?.cancel();
     super.dispose();
   }
 
-  String _formatDuration(Duration d) {
-    final totalMinutes = d.inMinutes;
-    final hours = totalMinutes ~/ 60;
-    final minutes = totalMinutes % 60;
-    if (hours <= 0) return '${minutes}m';
-    return '${hours}h ${minutes}m';
-  }
-
-  /// 🔁 Update countdown based on local device time
-  void _updateCountdown() {
-    final settings = Hive.box('settings');
-    final hour = settings.get('auto_reduce_hour', defaultValue: 23) as int;
-    final minute = settings.get('auto_reduce_minute', defaultValue: 55) as int;
-
-    final now = DateTime.now(); // ✅ local time
-    DateTime nextLocal = DateTime(now.year, now.month, now.day, hour, minute);
-
-    if (!nextLocal.isAfter(now)) {
-      nextLocal = nextLocal.add(const Duration(days: 1));
-    }
-
-    setState(() {
-      _nextReductionTime = nextLocal;
-      _timeToNextReduction = nextLocal.difference(now);
-    });
-  }
-
-  void _startCountdownTimer() {
-    _countdownTimer?.cancel();
-    _updateCountdown();
-    _countdownTimer = Timer.periodic(const Duration(minutes: 1), (_) {
-      _updateCountdown();
-    });
-  }
-
-  /// Prefill fields when a CommonExpense is chosen
+  /// ✅ APPLY COMMON EXPENSE (FIXED)
   void applyCommonExpense(CommonExpense ce) {
     setState(() {
-      title = ce.title;
-      amount = ce.amount;
       category = ce.category;
-      note = ce.note;
+      _titleController.text = ce.title;
+      _amountController.text = ce.amount.toString();
+      _noteController.text = ce.note;
     });
   }
 
   void save() {
     if (!(_formKey.currentState?.validate() ?? false)) return;
-    _formKey.currentState?.save();
+    _formKey.currentState!.save();
+
+    final title = _titleController.text.trim();
+    final amount = double.tryParse(_amountController.text) ?? 0;
+    final note = _noteController.text.trim();
 
     if (widget.isEarning) {
       final box = Hive.box<Earning>('earnings_box');
@@ -440,10 +374,9 @@ class _AddEditSheetState extends State<AddEditSheet> {
           ..note = note;
         e.save();
       } else {
-        final id = DateTime.now().millisecondsSinceEpoch.toString();
         box.add(
           Earning(
-            id: id,
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
             title: title,
             amount: amount,
             source: source,
@@ -455,74 +388,28 @@ class _AddEditSheetState extends State<AddEditSheet> {
     } else {
       final box = Hive.box<Expense>('expenses_box');
 
-      // =============================
-      // 🧩 EXISTING EXPENSE (Edit)
-      // =============================
       if (widget.expense != null) {
         final e = widget.expense!;
         e
           ..title = title
           ..amount = amount
           ..category = category
-          ..date = date
           ..note = note
           ..isPaid = isPaid
+          ..date = date
           ..autoReduceEnabled = autoReduceEnabled;
-
-        if (autoReduceEnabled) {
-          if (totalBudget <= 0 && amount > 0) totalBudget = amount;
-
-          e
-            ..totalBudget = totalBudget
-            ..dailyReduce = dailyReduce > 0 ? dailyReduce : null
-            ..lastReducedDateUtc = null; // ✅ no UTC now
-
-          // ✅ NEW CODE — Track start and progress
-          e.autoReduceStartDate ??= DateTime.now();
-          e.reducedDaysCount ??= 0;
-        } else {
-          e
-            ..totalBudget = null
-            ..dailyReduce = null
-            ..lastReducedDateUtc = null
-            ..autoReduceStartDate = null
-            ..reducedDaysCount = null;
-        }
-
         e.save();
-      }
-      // =============================
-      // 🧩 NEW EXPENSE (Add)
-      // =============================
-      else {
-        if (autoReduceEnabled) {
-          if (totalBudget <= 0 && amount > 0) {
-            totalBudget = amount;
-          } else if (totalBudget > 0 && amount <= 0) {
-            amount = totalBudget;
-          }
-        }
-
-        final id = DateTime.now().millisecondsSinceEpoch.toString();
-
+      } else {
         box.add(
           Expense(
-            id: id,
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
             title: title,
             amount: amount,
             category: category,
             date: date,
             note: note,
             isPaid: isPaid,
-            totalBudget: autoReduceEnabled ? totalBudget : null,
-            dailyReduce: autoReduceEnabled && dailyReduce > 0
-                ? dailyReduce
-                : null,
             autoReduceEnabled: autoReduceEnabled,
-            lastReducedDateUtc: null, // removed UTC
-            // ✅ NEW FIELDS
-            autoReduceStartDate: autoReduceEnabled ? DateTime.now() : null,
-            reducedDaysCount: autoReduceEnabled ? 0 : null,
           ),
         );
       }
@@ -535,188 +422,117 @@ class _AddEditSheetState extends State<AddEditSheet> {
   @override
   Widget build(BuildContext context) {
     final isE = widget.isEarning;
+
     return Form(
       key: _formKey,
       child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              isE ? 'Add / Edit Earning' : 'Add / Edit Expense',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
+        child: Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+            left: 16,
+            right: 16,
+            top: 16,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                isE ? 'Add / Edit Earning' : 'Add / Edit Expense',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
 
-            if (!isE)
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton.icon(
-                  onPressed: () async {
-                    final selected = await showModalBottomSheet<CommonExpense>(
-                      context: context,
-                      builder: (ctx) => const SelectCommonExpenseSheet(),
-                    );
-                    if (selected != null) applyCommonExpense(selected);
-                  },
-                  icon: const Icon(Icons.library_books_outlined),
-                  label: const Text("Use Common Expense"),
+              if (!isE)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    icon: const Icon(Icons.library_books),
+                    label: const Text("Use Common Expense"),
+                    onPressed: () async {
+                      final selected =
+                          await showModalBottomSheet<CommonExpense>(
+                            context: context,
+                            builder: (_) => const SelectCommonExpenseSheet(),
+                          );
+                      if (selected != null) applyCommonExpense(selected);
+                    },
+                  ),
                 ),
-              ),
 
-            TextFormField(
-              initialValue: title,
-              decoration: InputDecoration(
-                labelText: isE ? 'Title (optional)' : 'Title',
-              ),
-              validator: (v) =>
-                  (!isE && (v == null || v.isEmpty)) ? 'Required' : null,
-              onSaved: (v) => title = v ?? '',
-            ),
-            const SizedBox(height: 10),
-
-            TextFormField(
-              initialValue: amount > 0 ? amount.toString() : '',
-              decoration: const InputDecoration(labelText: 'Amount'),
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              validator: (v) =>
-                  v == null || double.tryParse(v) == null ? 'Invalid' : null,
-              onSaved: (v) => amount = double.tryParse(v ?? '0') ?? 0,
-            ),
-            const SizedBox(height: 10),
-
-            if (!isE)
-              DropdownButtonFormField<String>(
-                value: category,
-                items: defaultCategories
-                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                    .toList(),
-                onChanged: (v) => setState(() => category = v!),
-                decoration: const InputDecoration(labelText: 'Category'),
-              ),
-
-            if (isE)
               TextFormField(
-                initialValue: source,
-                decoration: const InputDecoration(
-                  labelText: 'Source (e.g., Salary, Bonus)',
+                controller: _titleController,
+                decoration: InputDecoration(
+                  labelText: isE ? 'Title (optional)' : 'Title',
                 ),
-                onSaved: (v) => source = v ?? '',
+                validator: (v) =>
+                    (!isE && (v == null || v.isEmpty)) ? 'Required' : null,
               ),
+              const SizedBox(height: 10),
 
-            const SizedBox(height: 10),
-
-            if (!isE) ...[
-              SwitchListTile(
-                value: autoReduceEnabled,
-                title: const Text('Enable Daily Auto Reduce'),
-                subtitle: const Text(
-                  'Automatically deduct a fixed amount every day from this expense.',
-                  style: TextStyle(fontSize: 12),
+              TextFormField(
+                controller: _amountController,
+                decoration: const InputDecoration(labelText: 'Amount'),
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
                 ),
-                onChanged: (v) {
-                  setState(() {
-                    autoReduceEnabled = v;
-                  });
-                  if (v) {
-                    _startCountdownTimer();
-                  } else {
-                    _countdownTimer?.cancel();
+                validator: (v) =>
+                    v == null || double.tryParse(v) == null ? 'Invalid' : null,
+              ),
+              const SizedBox(height: 10),
+
+              if (!isE)
+                DropdownButtonFormField<String>(
+                  initialValue: category,
+                  items: defaultCategories
+                      .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                      .toList(),
+                  onChanged: (v) => setState(() => category = v!),
+                  decoration: const InputDecoration(labelText: 'Category'),
+                ),
+
+              const SizedBox(height: 10),
+
+              TextFormField(
+                controller: _dateController,
+                readOnly: true,
+                decoration: const InputDecoration(
+                  labelText: 'Date',
+                  suffixIcon: Icon(Icons.calendar_today),
+                ),
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: date,
+                    firstDate: DateTime(2000),
+                    lastDate: DateTime(2100),
+                  );
+                  if (picked != null) {
                     setState(() {
-                      _timeToNextReduction = null;
-                      _nextReductionTime = null;
+                      date = picked;
+                      _dateController.text = DateFormat.yMd().format(picked);
                     });
                   }
                 },
               ),
-              if (autoReduceEnabled) ...[
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 4,
-                  ),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: _nextReductionTime != null
-                        ? Text(
-                            'Next auto reduce at ${DateFormat('hh:mm a').format(_nextReductionTime!)} '
-                            '(${_formatDuration(_timeToNextReduction!)} remaining)',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          )
-                        : const Text('Calculating next auto reduce…'),
-                  ),
+              const SizedBox(height: 10),
+
+              TextFormField(
+                controller: _noteController,
+                decoration: const InputDecoration(labelText: 'Note'),
+              ),
+
+              if (!isE)
+                SwitchListTile(
+                  value: isPaid,
+                  title: const Text('Paid'),
+                  onChanged: (v) => setState(() => isPaid = v),
                 ),
-                TextFormField(
-                  initialValue: totalBudget > 0
-                      ? totalBudget.toString()
-                      : (amount > 0 ? amount.toString() : ''),
-                  decoration: const InputDecoration(
-                    labelText: 'Total Budget (e.g., 5500)',
-                  ),
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  onSaved: (v) => totalBudget = double.tryParse(v ?? '0') ?? 0,
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  initialValue: dailyReduce > 0 ? dailyReduce.toString() : '',
-                  decoration: const InputDecoration(
-                    labelText: 'Daily Deduct Amount (e.g., 180)',
-                  ),
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  onSaved: (v) => dailyReduce = double.tryParse(v ?? '0') ?? 0,
-                ),
-              ],
-              const SizedBox(height: 8),
+
+              const SizedBox(height: 20),
+              ElevatedButton(onPressed: save, child: const Text('Save')),
+              const SizedBox(height: 20),
             ],
-
-            TextFormField(
-              readOnly: true,
-              decoration: const InputDecoration(
-                labelText: 'Date',
-                suffixIcon: Icon(Icons.calendar_today),
-              ),
-              controller: _dateController,
-              onTap: () async {
-                final picked = await showDatePicker(
-                  context: context,
-                  initialDate: date,
-                  firstDate: DateTime(2000),
-                  lastDate: DateTime(2100),
-                );
-                if (picked != null) {
-                  setState(() {
-                    date = picked;
-                    _dateController.text = DateFormat.yMd().format(date);
-                  });
-                }
-              },
-            ),
-            const SizedBox(height: 10),
-
-            TextFormField(
-              initialValue: note,
-              decoration: const InputDecoration(labelText: 'Note'),
-              onSaved: (v) => note = v ?? '',
-            ),
-
-            const SizedBox(height: 10),
-
-            if (!isE)
-              SwitchListTile(
-                value: isPaid,
-                title: const Text('Paid'),
-                onChanged: (v) => setState(() => isPaid = v),
-              ),
-
-            const SizedBox(height: 20),
-            ElevatedButton(onPressed: save, child: const Text('Save')),
-            const SizedBox(height: 20),
-          ],
+          ),
         ),
       ),
     );
