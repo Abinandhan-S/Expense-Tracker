@@ -12,6 +12,75 @@ import 'page/common_expense.dart';
 import 'page/settings.dart';
 
 // =============================================================
+// HELPER: INITIALIZE SORT INDEX FOR MIGRATION
+// =============================================================
+Future<void> initializeSortIndexForExistingExpenses() async {
+  final expenseBox = Hive.box<Expense>('expenses_box');
+  
+  // Group expenses by month
+  final Map<String, List<Expense>> expensesByMonth = {};
+  
+  for (final expense in expenseBox.values) {
+    final monthKey = '${expense.date.year}_${expense.date.month}';
+    expensesByMonth.putIfAbsent(monthKey, () => []).add(expense);
+  }
+  
+  // Initialize sortIndex for each month's expenses
+  for (final entry in expensesByMonth.entries) {
+    final expenses = entry.value;
+    
+    // Sort by current sortIndex (if any) or by date as fallback
+    expenses.sort((a, b) {
+      if (a.sortIndex != b.sortIndex) {
+        return a.sortIndex.compareTo(b.sortIndex);
+      }
+      return a.date.compareTo(b.date);
+    });
+    
+    // Assign proper sortIndex values
+    for (int i = 0; i < expenses.length; i++) {
+      if (expenses[i].sortIndex != i) {
+        expenses[i].sortIndex = i;
+        await expenses[i].save();
+      }
+    }
+  }
+}
+
+Future<void> initializeSortIndexForExistingEarnings() async {
+  final earningBox = Hive.box<Earning>('earnings_box');
+  
+  // Group earnings by month
+  final Map<String, List<Earning>> earningsByMonth = {};
+  
+  for (final earning in earningBox.values) {
+    final monthKey = '${earning.date.year}_${earning.date.month}';
+    earningsByMonth.putIfAbsent(monthKey, () => []).add(earning);
+  }
+  
+  // Initialize sortIndex for each month's earnings
+  for (final entry in earningsByMonth.entries) {
+    final earnings = entry.value;
+    
+    // Sort by current sortIndex (if any) or by date as fallback
+    earnings.sort((a, b) {
+      if (a.sortIndex != b.sortIndex) {
+        return a.sortIndex.compareTo(b.sortIndex);
+      }
+      return a.date.compareTo(b.date);
+    });
+    
+    // Assign proper sortIndex values
+    for (int i = 0; i < earnings.length; i++) {
+      if (earnings[i].sortIndex != i) {
+        earnings[i].sortIndex = i;
+        await earnings[i].save();
+      }
+    }
+  }
+}
+
+// =============================================================
 // MAIN INITIALIZATION
 // =============================================================
 void main() async {
@@ -22,10 +91,60 @@ void main() async {
   Hive.registerAdapter(EarningAdapter());
   Hive.registerAdapter(CommonExpenseAdapter());
 
-  await Hive.openBox<Expense>('expenses_box');
-  await Hive.openBox<Earning>('earnings_box');
-  await Hive.openBox<CommonExpense>('common_expenses_box');
-  await Hive.openBox('settings');
+  // Try to open boxes, clear corrupted data if typeId error occurs
+  try {
+    await Hive.openBox<Expense>('expenses_box');
+    await Hive.openBox<Earning>('earnings_box');
+    await Hive.openBox<CommonExpense>('common_expenses_box');
+    await Hive.openBox('settings');
+  } catch (e) {
+    // If there's any Hive-related error, clear the data and retry
+    if (e.toString().contains('typeId') || 
+        e.toString().contains('Null') || 
+        e.toString().contains('type cast')) {
+      print('Hive data corruption detected: ${e.toString()}');
+      print('Clearing corrupted data boxes...');
+      
+      try {
+        await Hive.deleteBoxFromDisk('expenses_box');
+      } catch (deleteError) {
+        print('Failed to delete expenses_box: ${deleteError.toString()}');
+      }
+      
+      try {
+        await Hive.deleteBoxFromDisk('earnings_box');
+      } catch (deleteError) {
+        print('Failed to delete earnings_box: ${deleteError.toString()}');
+      }
+      
+      try {
+        await Hive.deleteBoxFromDisk('common_expenses_box');
+      } catch (deleteError) {
+        print('Failed to delete common_expenses_box: ${deleteError.toString()}');
+      }
+      
+      try {
+        await Hive.deleteBoxFromDisk('settings');
+      } catch (deleteError) {
+        print('Failed to delete settings box: ${deleteError.toString()}');
+      }
+      
+      print('Retrying to open boxes after clearing...');
+      await Hive.openBox<Expense>('expenses_box');
+      await Hive.openBox<Earning>('earnings_box');
+      await Hive.openBox<CommonExpense>('common_expenses_box');
+      await Hive.openBox('settings');
+      
+    } else {
+      throw Exception('Hive initialization error: ${e.toString()}');
+    }
+  }
+
+  // Initialize sortIndex for existing expenses that don't have one
+  await initializeSortIndexForExistingExpenses();
+  
+  // Initialize sortIndex for existing earnings that don't have one
+  await initializeSortIndexForExistingEarnings();
 
   await ensureRecurringSalaryFilled();
   runApp(const ExpenseTrackerApp());
@@ -115,7 +234,7 @@ Future<void> applyDailyReductions() async {
     final daysSince = todayLocalDate.difference(last).inDays;
 
     // ✅ Skip today – only reduce for days before today
-    if (daysSince <= 1) continue;
+    if (daysSince == 0) continue;
 
     final missedDays = daysSince;
     final reduction = e.dailyReduce! * missedDays;
@@ -251,9 +370,9 @@ class _MainShellState extends State<MainShell> {
 }
 
 // ======================= FILTER ENUMS ===========================
-enum MonthlyFilter { all, income, expense }
+enum MonthlyFilter { all, income, expense, extraExpense, necessaryExpense }
 
-enum ExpenseStatusFilter { all, paid, unpaid }
+enum ExpenseStatusFilter { all, paid, unpaid, extra, necessary }
 
 enum EarningStatusFilter { all, received, pending }
 
@@ -281,12 +400,14 @@ class _AddEditSheetState extends State<AddEditSheet> {
 
   late String category;
   late bool isPaid;
+  late bool isReceived;
   late String source;
   late DateTime date;
 
   late double totalBudget;
   late double dailyReduce;
   late bool autoReduceEnabled;
+  late bool isExtra;
 
   late TextEditingController _titleController;
   late TextEditingController _amountController;
@@ -307,11 +428,13 @@ class _AddEditSheetState extends State<AddEditSheet> {
       );
       _noteController = TextEditingController(text: e?.note ?? '');
       source = e?.source ?? 'Salary';
+      isReceived = e?.isReceived ?? false;
       category = defaultCategories.first;
       isPaid = false;
       autoReduceEnabled = false;
       totalBudget = 0;
       dailyReduce = 0;
+      isExtra = false;
       date = e?.date ?? DateTime.now();
     } else {
       final e = widget.expense;
@@ -325,6 +448,7 @@ class _AddEditSheetState extends State<AddEditSheet> {
       autoReduceEnabled = e?.autoReduceEnabled ?? false;
       totalBudget = e?.totalBudget ?? (e?.amount ?? 0);
       dailyReduce = e?.dailyReduce ?? 0;
+      isExtra = e?.isExtra ?? false;
       source = 'Salary';
       date = e?.date ?? DateTime.now();
     }
@@ -371,7 +495,8 @@ class _AddEditSheetState extends State<AddEditSheet> {
           ..amount = amount
           ..source = source
           ..date = date
-          ..note = note;
+          ..note = note
+          ..isReceived = isReceived;
         e.save();
       } else {
         box.add(
@@ -382,6 +507,7 @@ class _AddEditSheetState extends State<AddEditSheet> {
             source: source,
             date: date,
             note: note,
+            isReceived: isReceived,
           ),
         );
       }
@@ -397,9 +523,18 @@ class _AddEditSheetState extends State<AddEditSheet> {
           ..note = note
           ..isPaid = isPaid
           ..date = date
-          ..autoReduceEnabled = autoReduceEnabled;
+          ..autoReduceEnabled = autoReduceEnabled
+          ..isExtra = isExtra;
         e.save();
       } else {
+        // Get the next available sortIndex for this month
+        final monthExpenses = box.values
+            .where((e) => e.date.year == date.year && e.date.month == date.month)
+            .toList();
+        final maxSortIndex = monthExpenses.isEmpty 
+            ? 0 
+            : monthExpenses.map((e) => e.sortIndex).reduce((a, b) => a > b ? a : b) + 1;
+        
         box.add(
           Expense(
             id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -410,6 +545,8 @@ class _AddEditSheetState extends State<AddEditSheet> {
             note: note,
             isPaid: isPaid,
             autoReduceEnabled: autoReduceEnabled,
+            sortIndex: maxSortIndex,
+            isExtra: isExtra,
           ),
         );
       }
@@ -526,6 +663,27 @@ class _AddEditSheetState extends State<AddEditSheet> {
                   value: isPaid,
                   title: const Text('Paid'),
                   onChanged: (v) => setState(() => isPaid = v),
+                ),
+
+              if (!isE)
+                SwitchListTile(
+                  value: isExtra,
+                  title: Row(
+                    children: [
+                      Icon(Icons.star, size: 18, color: Colors.amber),
+                      const SizedBox(width: 8),
+                      const Text('Extra Expense'),
+                    ],
+                  ),
+                  subtitle: const Text('Mark as non-essential expense'),
+                  onChanged: (v) => setState(() => isExtra = v),
+                ),
+
+              if (isE)
+                SwitchListTile(
+                  value: isReceived,
+                  title: const Text('Received'),
+                  onChanged: (v) => setState(() => isReceived = v),
                 ),
 
               const SizedBox(height: 20),
