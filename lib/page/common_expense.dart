@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import '../services/category_service.dart';
+import 'add_category_sheet.dart';
 
 // =============================================================
 // COMMON EXPENSE MODEL + PAGE
@@ -137,38 +139,12 @@ class _CommonExpensePageState extends State<CommonExpensePage> {
 // =============================================================
 // CONSTANTS & MODELS
 // =============================================================
-const List<String> defaultCategories = [
-  'Food',
-  'Travel',
-  'Shopping',
-  'Bills',
-  'Fuel',
-  'Rent',
-  'Life',
-  'Others',
-];
 
-const Map<String, IconData> categoryIcons = {
-  'Food': Icons.restaurant,
-  'Travel': Icons.flight,
-  'Shopping': Icons.shopping_cart,
-  'Bills': Icons.receipt_long,
-  'Fuel': Icons.local_gas_station,
-  'Rent': Icons.home,
-  'Life': Icons.favorite,
-  'Others': Icons.more_horiz,
-};
+// Helper to get Icon
+IconData getCategoryIcon(String category) => CategoryService.getIcon(category);
 
-const Map<String, Color> categoryColors = {
-  'Food': Colors.orange,
-  'Travel': Colors.blue,
-  'Shopping': Colors.purple,
-  'Bills': Colors.grey,
-  'Fuel': Colors.red,
-  'Rent': Colors.teal,
-  'Life': Colors.pink,
-  'Others': Colors.green,
-};
+// Helper to get Color
+Color getCategoryColor(String category) => CategoryService.getColor(category);
 
 class AddCommonExpenseSheet extends StatefulWidget {
   final CommonExpense? item;
@@ -191,7 +167,11 @@ class _AddCommonExpenseSheetState extends State<AddCommonExpenseSheet> {
     super.initState();
     title = widget.item?.title ?? '';
     amount = widget.item?.amount ?? 0;
-    category = widget.item?.category ?? defaultCategories.first;
+    category =
+        widget.item?.category ??
+        (CategoryService.box.values.isNotEmpty
+            ? CategoryService.box.values.first.name
+            : 'Others');
     note = widget.item?.note ?? '';
   }
 
@@ -254,13 +234,44 @@ class _AddCommonExpenseSheetState extends State<AddCommonExpenseSheet> {
                 onSaved: (v) => amount = double.tryParse(v ?? '0') ?? 0,
               ),
               const SizedBox(height: 8),
-              DropdownButtonFormField<String>(
-                initialValue: category,
-                items: defaultCategories
-                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                    .toList(),
-                onChanged: (v) => setState(() => category = v!),
-                decoration: const InputDecoration(labelText: 'Category'),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      key: ValueKey('common_category_$category'),
+                      value: category, // remove initialValue, use value
+                      items: CategoryService.getAll()
+                          .map(
+                            (c) => DropdownMenuItem(
+                              value: c.name,
+                              child: Text(c.name),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (v) => setState(() => category = v!),
+                      decoration: const InputDecoration(labelText: 'Category'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    onPressed: () {
+                      showModalBottomSheet(
+                        context: context,
+                        isScrollControlled: true,
+                        builder: (ctx) => AddCategorySheet(
+                          onCategoryAdded: (newCatName) {
+                            setState(() {
+                              category = newCatName;
+                            });
+                          },
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.add_circle_outline),
+                    tooltip: 'Add New Category',
+                  ),
+                ],
               ),
               const SizedBox(height: 8),
               TextFormField(
