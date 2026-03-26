@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:flutter/services.dart';
 
 import '../main.dart';
+import 'category_management.dart';
 
 // ======================= SETTINGS PAGE =========================
 class SettingsPage extends StatefulWidget {
@@ -79,6 +79,22 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
             ),
+          ),
+
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.category),
+            title: const Text('Manage Categories'),
+            subtitle: const Text('Add, edit, or delete expense categories'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const CategoryManagementPage(),
+                ),
+              );
+            },
           ),
         ],
       ),

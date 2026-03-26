@@ -10,6 +10,9 @@ import 'dart:ui';
 
 import '../main.dart';
 import '../models/earning_expense.dart';
+import '../utils/constants.dart';
+import '../services/category_service.dart';
+import 'add_edit_sheet.dart';
 
 // ======================= MONTHLY PAGE ===========================
 class MonthlyPage extends StatefulWidget {
@@ -33,7 +36,11 @@ class MonthlyPage extends StatefulWidget {
 class _MonthlyPageState extends State<MonthlyPage> {
   final Box<Expense> expenseBox = Hive.box<Expense>('expenses_box');
   final Box<Earning> earningBox = Hive.box<Earning>('earnings_box');
+  String _searchQuery = '';
+  bool _isSearching = false;
+  final TextEditingController _searchController = TextEditingController();
   String? _expandedExpenseId;
+  String? _selectedCategory; // null means "All Categories"
 
   late DateTime selectedMonth;
   MonthlyFilter _filter = MonthlyFilter.all;
@@ -44,6 +51,12 @@ class _MonthlyPageState extends State<MonthlyPage> {
   void initState() {
     super.initState();
     selectedMonth = widget.selectedMonth;
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   @override
@@ -97,7 +110,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
     double reduced = 0.0;
 
     for (final e in expenseBox.values) {
-      if (e.autoReduceEnabled &&
+      if (e.autoReduceEnabled == true &&
           e.date.year == selectedMonth.year &&
           e.date.month == selectedMonth.month &&
           (e.dailyReduce ?? 0) > 0 &&
@@ -260,9 +273,61 @@ class _MonthlyPageState extends State<MonthlyPage> {
           case ExpenseStatusFilter.all:
             return expenses;
           case ExpenseStatusFilter.paid:
+            // Expense + Paid: show both extra paid AND necessary paid
             return expenses.where((e) => e.isPaid).toList();
           case ExpenseStatusFilter.unpaid:
+            // Expense + Unpaid: show both extra unpaid AND necessary unpaid
             return expenses.where((e) => !e.isPaid).toList();
+          case ExpenseStatusFilter.extra:
+            // Expense + Extra: show all extra expenses (both paid and unpaid)
+            return expenses.where((e) => e.isExtra ?? false).toList();
+          case ExpenseStatusFilter.necessary:
+            // Expense + Necessary: show all necessary expenses (both paid and unpaid)
+            return expenses.where((e) => !(e.isExtra ?? false)).toList();
+        }
+      case MonthlyFilter.extraExpense:
+        switch (_expenseStatusFilter) {
+          case ExpenseStatusFilter.all:
+            // Extra + All: show all extra expenses
+            return expenses.where((e) => e.isExtra ?? false).toList();
+          case ExpenseStatusFilter.paid:
+            // Extra + Paid: show ONLY extra paid
+            return expenses
+                .where((e) => (e.isExtra ?? false) && e.isPaid)
+                .toList();
+          case ExpenseStatusFilter.unpaid:
+            // Extra + Unpaid: show ONLY extra unpaid
+            return expenses
+                .where((e) => (e.isExtra ?? false) && !e.isPaid)
+                .toList();
+          case ExpenseStatusFilter.extra:
+            // Extra + Extra: same as All
+            return expenses.where((e) => e.isExtra ?? false).toList();
+          case ExpenseStatusFilter.necessary:
+            // Extra + Necessary: no results
+            return [];
+        }
+      case MonthlyFilter.necessaryExpense:
+        switch (_expenseStatusFilter) {
+          case ExpenseStatusFilter.all:
+            // Necessary + All: show all necessary expenses
+            return expenses.where((e) => !(e.isExtra ?? false)).toList();
+          case ExpenseStatusFilter.paid:
+            // Necessary + Paid: show ONLY necessary paid
+            return expenses
+                .where((e) => !(e.isExtra ?? false) && e.isPaid)
+                .toList();
+          case ExpenseStatusFilter.unpaid:
+            // Necessary + Unpaid: show ONLY necessary unpaid
+            return expenses
+                .where((e) => !(e.isExtra ?? false) && !e.isPaid)
+                .toList();
+          case ExpenseStatusFilter.extra:
+            // Necessary + Extra: no results
+            return [];
+          case ExpenseStatusFilter.necessary:
+            // Necessary + Necessary: same as All
+            return expenses.where((e) => !(e.isExtra ?? false)).toList();
         }
     }
   }
@@ -281,8 +346,36 @@ class _MonthlyPageState extends State<MonthlyPage> {
             return earnings.where((e) => !e.isReceived).toList();
         }
       case MonthlyFilter.expense:
+      case MonthlyFilter.extraExpense:
+      case MonthlyFilter.necessaryExpense:
         return [];
     }
+  }
+
+  List<Expense> _applySearchFilterExpense(List<Expense> list) {
+    if (_searchQuery.isEmpty) return list;
+    return list.where((e) {
+      final q = _searchQuery.toLowerCase();
+      return e.title.toLowerCase().contains(q) ||
+          (e.note?.toLowerCase().contains(q) ?? false) ||
+          e.category.toLowerCase().contains(q);
+    }).toList();
+  }
+
+  List<Earning> _applySearchFilterEarning(List<Earning> list) {
+    if (_searchQuery.isEmpty) return list;
+    return list.where((e) {
+      final q = _searchQuery.toLowerCase();
+      return e.title.toLowerCase().contains(q) ||
+          (e.note?.toLowerCase().contains(q) ?? false) ||
+          e.source.toLowerCase().contains(q);
+    }).toList();
+  }
+
+  // Category filter
+  List<Expense> _applyCategoryFilter(List<Expense> list) {
+    if (_selectedCategory == null) return list;
+    return list.where((e) => e.category == _selectedCategory).toList();
   }
 
   /// Use Common Expense (multi-select) from Monthly tab
@@ -444,8 +537,12 @@ class _MonthlyPageState extends State<MonthlyPage> {
           onPressed: () {
             setState(() {
               _filter = f;
-              if (f == MonthlyFilter.expense) {
+              if (f == MonthlyFilter.expense ||
+                  f == MonthlyFilter.extraExpense ||
+                  f == MonthlyFilter.necessaryExpense) {
                 _expenseStatusFilter = ExpenseStatusFilter.all;
+              } else if (f == MonthlyFilter.income) {
+                _earningStatusFilter = EarningStatusFilter.all;
               }
             });
           },
@@ -547,26 +644,59 @@ class _MonthlyPageState extends State<MonthlyPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Expense Tracker'),
+        title: _isSearching
+            ? TextField(
+                controller: _searchController,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: 'Search title, note, category...',
+                  border: InputBorder.none,
+                ),
+                onChanged: (v) {
+                  setState(() {
+                    _searchQuery = v.trim();
+                  });
+                },
+              )
+            : const Text('Expense Tracker'),
         actions: [
-          Row(
-            children: [
-              Icon(isDark ? Icons.dark_mode : Icons.light_mode),
-              Switch(value: isDark, onChanged: (v) => widget.onToggleTheme(v)),
-            ],
+          IconButton(
+            icon: Icon(_isSearching ? Icons.close : Icons.search),
+            onPressed: () {
+              setState(() {
+                if (_isSearching) {
+                  _isSearching = false;
+                  _searchQuery = '';
+                  _searchController.clear();
+                } else {
+                  _isSearching = true;
+                }
+              });
+            },
           ),
-          const SizedBox(width: 8),
-          TextButton.icon(
-            onPressed: _showCommonApplySheet,
-            icon: const Icon(Icons.repeat, size: 18),
-            label: const Text("Use Common"),
-            style: TextButton.styleFrom(
-              foregroundColor: isDark
+          if (!_isSearching) ...[
+            Row(
+              children: [
+                IconButton(
+                  icon: Icon(isDark ? Icons.dark_mode : Icons.light_mode),
+                  onPressed: () => widget.onToggleTheme(!isDark),
+                  tooltip: isDark
+                      ? "Switch to Light Mode"
+                      : "Switch to Dark Mode",
+                ),
+              ],
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              onPressed: _showCommonApplySheet,
+              icon: const Icon(Icons.repeat, size: 18),
+              tooltip: "Use Common Expense",
+              color: isDark
                   ? Colors.cyanAccent
                   : Theme.of(context).colorScheme.primary,
             ),
-          ),
-          const SizedBox(width: 8),
+            const SizedBox(width: 8),
+          ],
         ],
       ),
       body: ValueListenableBuilder(
@@ -593,10 +723,18 @@ class _MonthlyPageState extends State<MonthlyPage> {
                             e.date.month == selectedMonth.month,
                       )
                       .toList()
-                    ..sort((a, b) => b.date.compareTo(a.date));
+                    ..sort((a, b) => a.sortIndex.compareTo(b.sortIndex));
 
-              final visibleExpenses = _applyExpenseFilter(allExpenses);
-              final visibleEarnings = _applyEarningFilter(allEarnings);
+              // 1. Apply Type Filters
+              var visibleExpenses = _applyExpenseFilter(allExpenses);
+              var visibleEarnings = _applyEarningFilter(allEarnings);
+
+              // 2. Apply Category Filter (only for expenses)
+              visibleExpenses = _applyCategoryFilter(visibleExpenses);
+
+              // 3. Apply Search Filter
+              visibleExpenses = _applySearchFilterExpense(visibleExpenses);
+              visibleEarnings = _applySearchFilterEarning(visibleEarnings);
 
               final displayedExpenses = displayedExpensesTotal(visibleExpenses);
               final displayedEarnings = displayedEarningsTotal(visibleEarnings);
@@ -657,6 +795,16 @@ class _MonthlyPageState extends State<MonthlyPage> {
                               Icons.shopping_bag,
                               'Expense',
                             ),
+                            buildFilterButton(
+                              MonthlyFilter.extraExpense,
+                              Icons.star,
+                              'Extra',
+                            ),
+                            buildFilterButton(
+                              MonthlyFilter.necessaryExpense,
+                              Icons.check_circle,
+                              'Necessary',
+                            ),
                           ],
                         ),
                       ),
@@ -704,6 +852,113 @@ class _MonthlyPageState extends State<MonthlyPage> {
                             ),
                     ),
 
+                    // Category Filter Chips (show when expense-related filter is active)
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 250),
+                      transitionBuilder: (child, animation) {
+                        return SizeTransition(
+                          sizeFactor: animation,
+                          axisAlignment: -1.0,
+                          child: FadeTransition(
+                            opacity: animation,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child:
+                          _filter == MonthlyFilter.expense ||
+                              _filter == MonthlyFilter.extraExpense ||
+                              _filter == MonthlyFilter.necessaryExpense
+                          ? Padding(
+                              key: const ValueKey('categoryFilterRow'),
+                              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'Filter by Category:',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  ValueListenableBuilder(
+                                    valueListenable: CategoryService.box
+                                        .listenable(),
+                                    builder: (context, box, _) {
+                                      final categories =
+                                          CategoryService.getAll();
+                                      return SingleChildScrollView(
+                                        scrollDirection: Axis.horizontal,
+                                        child: Row(
+                                          children: [
+                                            // "All Categories" chip
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                right: 8,
+                                              ),
+                                              child: FilterChip(
+                                                selected:
+                                                    _selectedCategory == null,
+                                                label: const Text('All'),
+                                                avatar: const Icon(
+                                                  Icons.apps,
+                                                  size: 18,
+                                                ),
+                                                onSelected: (v) {
+                                                  setState(() {
+                                                    _selectedCategory = null;
+                                                  });
+                                                },
+                                              ),
+                                            ),
+                                            // Category chips from CategoryService
+                                            ...categories.map((cat) {
+                                              final isSelected =
+                                                  _selectedCategory == cat.name;
+                                              return Padding(
+                                                padding: const EdgeInsets.only(
+                                                  right: 8,
+                                                ),
+                                                child: FilterChip(
+                                                  selected: isSelected,
+                                                  label: Text(cat.name),
+                                                  avatar: Icon(
+                                                    IconData(
+                                                      cat.iconCodePoint,
+                                                      fontFamily:
+                                                          'MaterialIcons',
+                                                    ),
+                                                    size: 18,
+                                                    color: isSelected
+                                                        ? null
+                                                        : Color(cat.colorValue),
+                                                  ),
+                                                  onSelected: (v) {
+                                                    setState(() {
+                                                      _selectedCategory = v
+                                                          ? cat.name
+                                                          : null;
+                                                    });
+                                                  },
+                                                ),
+                                              );
+                                            }),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            )
+                          : const SizedBox(
+                              key: ValueKey('categoryFilterEmpty'),
+                              height: 0,
+                            ),
+                    ),
+
                     // Animated Paid/Unpaid row (only when Expense selected)
                     AnimatedSwitcher(
                       duration: const Duration(milliseconds: 250),
@@ -717,7 +972,10 @@ class _MonthlyPageState extends State<MonthlyPage> {
                           ),
                         );
                       },
-                      child: _filter == MonthlyFilter.expense
+                      child:
+                          _filter == MonthlyFilter.expense ||
+                              _filter == MonthlyFilter.extraExpense ||
+                              _filter == MonthlyFilter.necessaryExpense
                           ? Padding(
                               key: const ValueKey('subFilterRow'),
                               padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
@@ -727,16 +985,53 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                   child: Row(
                                     mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
-                                      buildExpenseStatusButton(
-                                        ExpenseStatusFilter.paid,
-                                        Icons.check_circle,
-                                        'Paid',
-                                      ),
-                                      buildExpenseStatusButton(
-                                        ExpenseStatusFilter.unpaid,
-                                        Icons.pending_actions,
-                                        'Unpaid',
-                                      ),
+                                      // Show different options based on main filter
+                                      if (_filter == MonthlyFilter.expense) ...[
+                                        buildExpenseStatusButton(
+                                          ExpenseStatusFilter.paid,
+                                          Icons.check_circle,
+                                          'Paid',
+                                        ),
+                                        buildExpenseStatusButton(
+                                          ExpenseStatusFilter.unpaid,
+                                          Icons.pending_actions,
+                                          'Unpaid',
+                                        ),
+                                      ] else if (_filter ==
+                                          MonthlyFilter.extraExpense) ...[
+                                        buildExpenseStatusButton(
+                                          ExpenseStatusFilter.all,
+                                          Icons.all_inclusive,
+                                          'All Extra',
+                                        ),
+                                        buildExpenseStatusButton(
+                                          ExpenseStatusFilter.paid,
+                                          Icons.check_circle,
+                                          'Paid',
+                                        ),
+                                        buildExpenseStatusButton(
+                                          ExpenseStatusFilter.unpaid,
+                                          Icons.pending_actions,
+                                          'Unpaid',
+                                        ),
+                                      ] else if (_filter ==
+                                          MonthlyFilter.necessaryExpense) ...[
+                                        buildExpenseStatusButton(
+                                          ExpenseStatusFilter.all,
+                                          Icons.all_inclusive,
+                                          'All Necessary',
+                                        ),
+                                        buildExpenseStatusButton(
+                                          ExpenseStatusFilter.paid,
+                                          Icons.check_circle,
+                                          'Paid',
+                                        ),
+                                        buildExpenseStatusButton(
+                                          ExpenseStatusFilter.unpaid,
+                                          Icons.pending_actions,
+                                          'Unpaid',
+                                        ),
+                                      ],
                                     ],
                                   ),
                                 ),
@@ -839,6 +1134,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                               icon: const Icon(Icons.add),
                               label: const Text('Earn'),
                               style: ElevatedButton.styleFrom(
+                                foregroundColor: Colors.white,
                                 backgroundColor: Colors.green,
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(8),
@@ -937,7 +1233,8 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                 style: TextStyle(fontWeight: FontWeight.bold),
                               ),
                               const SizedBox(height: 8),
-                              ...defaultCategories.map((cat) {
+                              ...CategoryService.getAll().map((catModel) {
+                                final cat = catModel.name;
                                 final catItems = allExpenses
                                     .where((e) => e.category == cat)
                                     .toList();
@@ -955,10 +1252,8 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                   child: Row(
                                     children: [
                                       Container(
-                                        width: 12,
                                         height: 12,
-                                        color:
-                                            categoryColors[cat] ?? Colors.black,
+                                        color: CategoryService.getColor(cat),
                                       ),
                                       const SizedBox(width: 8),
                                       Expanded(child: Text(cat)),
@@ -1017,7 +1312,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
 
                           // 🔢 Calculate daily reduction details
                           final bool hasAutoReduce =
-                              e.autoReduceEnabled &&
+                              (e.autoReduceEnabled ?? false) &&
                               (e.dailyReduce ?? 0) > 0 &&
                               (e.totalBudget ?? 0) > 0;
                           final int totalDays = hasAutoReduce
@@ -1081,248 +1376,175 @@ class _MonthlyPageState extends State<MonthlyPage> {
                                     : const SizedBox.shrink(),
                               ),
 
-                              // 🔹 MAIN CARD WITH DRAG + DISMISS + CHECKBOX + DELETE
+                              // 🔹 MAIN CARD WITH CHECKBOX + DELETE
                               ReorderableDelayedDragStartListener(
-                                index: i,
                                 key: Key(
-                                  'drag_${e.id}_${e.date.millisecondsSinceEpoch}',
+                                  'expense_${e.id}_${e.date.millisecondsSinceEpoch}',
                                 ),
-                                child: Dismissible(
-                                  key: Key(
-                                    'dismiss_${e.id}_${e.date.millisecondsSinceEpoch}',
+                                index: i,
+                                child: Card(
+                                  margin: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 6,
                                   ),
-                                  background: Container(
-                                    color: Colors.green,
-                                    alignment: Alignment.centerLeft,
-                                    padding: const EdgeInsets.only(left: 20),
-                                    child: const Icon(
-                                      Icons.edit,
-                                      color: Colors.white,
+                                  child: ListTile(
+                                    onTap: () => openAddEditSheet(
+                                      expense: e,
+                                      isEarning: false,
                                     ),
-                                  ),
-                                  secondaryBackground: Container(
-                                    color: Colors.red,
-                                    alignment: Alignment.centerRight,
-                                    padding: const EdgeInsets.only(right: 20),
-                                    child: const Icon(
-                                      Icons.delete,
-                                      color: Colors.white,
+                                    leading: CircleAvatar(
+                                      backgroundColor: CategoryService.getColor(
+                                        e.category,
+                                      ).withOpacity(0.2),
+                                      child: Icon(
+                                        CategoryService.getIcon(e.category),
+                                        color: CategoryService.getColor(
+                                          e.category,
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                  confirmDismiss: (direction) async {
-                                    if (direction ==
-                                        DismissDirection.startToEnd) {
-                                      openAddEditSheet(
-                                        expense: e,
-                                        isEarning: false,
-                                      );
-                                      return false;
-                                    } else {
-                                      final shouldDelete = await showDialog<bool>(
-                                        context: context,
-                                        builder: (ctx) => AlertDialog(
-                                          title: const Text("Delete Expense?"),
-                                          content: const Text(
-                                            "Do you want to delete this item?",
-                                          ),
-                                          actions: [
-                                            TextButton(
-                                              onPressed: () =>
-                                                  Navigator.pop(ctx, false),
-                                              child: const Text("Cancel"),
-                                            ),
-                                            TextButton(
-                                              onPressed: () =>
-                                                  Navigator.pop(ctx, true),
-                                              child: const Text("Delete"),
-                                            ),
-                                          ],
-                                        ),
-                                      );
-                                      return shouldDelete ?? false;
-                                    }
-                                  },
-                                  onDismissed: (direction) async {
-                                    final deletedCopy = e.copyWith();
-                                    await e.delete();
-                                    if (mounted) {
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).hideCurrentSnackBar();
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
-                                        SnackBar(
-                                          content: const Text(
-                                            'Expense deleted',
-                                          ),
-                                          action: SnackBarAction(
-                                            label: 'UNDO',
-                                            onPressed: () async {
-                                              final box = Hive.box<Expense>(
-                                                'expenses_box',
-                                              );
-                                              await box.add(deletedCopy);
-                                              setState(() {});
-                                            },
-                                          ),
-                                          duration: const Duration(seconds: 4),
-                                        ),
-                                      );
-                                    }
-                                  },
-                                  child: Card(
-                                    margin: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 6,
+                                    title: Text(
+                                      e.title.isNotEmpty ? e.title : e.category,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
                                     ),
-                                    child: ListTile(
-                                      onTap: () => openAddEditSheet(
-                                        expense: e,
-                                        isEarning: false,
-                                      ),
-                                      leading: CircleAvatar(
-                                        backgroundColor:
-                                            categoryColors[e.category] ??
-                                            Colors.blueGrey,
-                                        child: Icon(
-                                          categoryIcons[e.category] ??
-                                              Icons.money,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                      title: Text(
-                                        e.title.isNotEmpty
-                                            ? e.title
-                                            : e.category,
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      subtitle: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            DateFormat.yMMMd().format(e.date),
+                                    subtitle: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(DateFormat.yMMMd().format(e.date)),
+                                      ],
+                                    ),
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text('₹${e.amount.toStringAsFixed(2)}'),
+                                        const SizedBox(width: 8),
+                                        // Pin/Extra expense toggle
+                                        GestureDetector(
+                                          onTap: () {
+                                            setState(() {
+                                              e.isExtra = !(e.isExtra ?? false);
+                                              e.save();
+                                            });
+                                          },
+                                          child: Icon(
+                                            (e.isExtra ?? false)
+                                                ? Icons.star
+                                                : Icons.star_border,
+                                            color: (e.isExtra ?? false)
+                                                ? Colors.amber
+                                                : Colors.grey,
+                                            size: 20,
                                           ),
-                                        ],
-                                      ),
-
-                                      trailing: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Text(
-                                            '₹${e.amount.toStringAsFixed(2)}',
-                                          ),
-                                          const SizedBox(width: 8),
-                                          if (hasAutoReduce) ...[
-                                            GestureDetector(
-                                              onTap: () {
-                                                setState(() {
-                                                  // Toggle info card visibility
-                                                  _expandedExpenseId =
-                                                      _expandedExpenseId == e.id
-                                                      ? null
-                                                      : e.id;
-                                                });
-                                              },
-                                              child: const Icon(
-                                                Icons.info_outline,
-                                                color: Colors.blueAccent,
-                                                size: 18,
-                                              ),
-                                            ),
-                                          ],
-
-                                          Checkbox(
-                                            value: e.isPaid,
-                                            onChanged: (val) {
+                                        ),
+                                        const SizedBox(width: 4),
+                                        if (hasAutoReduce) ...[
+                                          GestureDetector(
+                                            onTap: () {
                                               setState(() {
-                                                e.isPaid = val ?? false;
-                                                e.save();
+                                                // Toggle info card visibility
+                                                _expandedExpenseId =
+                                                    _expandedExpenseId == e.id
+                                                    ? null
+                                                    : e.id;
                                               });
                                             },
-                                          ),
-                                          IconButton(
-                                            icon: const Icon(
-                                              Icons.delete,
-                                              color: Colors.redAccent,
+                                            child: const Icon(
+                                              Icons.info_outline,
+                                              color: Colors.blueAccent,
+                                              size: 18,
                                             ),
-                                            onPressed: () async {
-                                              final confirmed =
-                                                  await showDialog<bool>(
-                                                    context: context,
-                                                    builder: (ctx) => AlertDialog(
-                                                      title: const Text(
-                                                        "Delete Expense?",
-                                                      ),
-                                                      content: const Text(
-                                                        "This action cannot be undone.",
-                                                      ),
-                                                      actions: [
-                                                        TextButton(
-                                                          onPressed: () =>
-                                                              Navigator.pop(
-                                                                ctx,
-                                                                false,
-                                                              ),
-                                                          child: const Text(
-                                                            "Cancel",
-                                                          ),
-                                                        ),
-                                                        TextButton(
-                                                          onPressed: () =>
-                                                              Navigator.pop(
-                                                                ctx,
-                                                                true,
-                                                              ),
-                                                          child: const Text(
-                                                            "Delete",
-                                                          ),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  );
-                                              if (confirmed ?? false) {
-                                                final deletedCopy = e
-                                                    .copyWith();
-                                                await e.delete();
-                                                if (mounted) {
-                                                  ScaffoldMessenger.of(
-                                                    context,
-                                                  ).hideCurrentSnackBar();
-                                                  ScaffoldMessenger.of(
-                                                    context,
-                                                  ).showSnackBar(
-                                                    SnackBar(
-                                                      content: const Text(
-                                                        'Expense deleted',
-                                                      ),
-                                                      action: SnackBarAction(
-                                                        label: 'UNDO',
-                                                        onPressed: () async {
-                                                          final box =
-                                                              Hive.box<Expense>(
-                                                                'expenses_box',
-                                                              );
-                                                          await box.add(
-                                                            deletedCopy,
-                                                          );
-                                                          setState(() {});
-                                                        },
-                                                      ),
-                                                      duration: const Duration(
-                                                        seconds: 4,
-                                                      ),
-                                                    ),
-                                                  );
-                                                }
-                                              }
-                                            },
                                           ),
                                         ],
-                                      ),
+
+                                        Checkbox(
+                                          value: e.isPaid,
+                                          onChanged: (val) {
+                                            setState(() {
+                                              e.isPaid = val ?? false;
+                                              e.save();
+                                            });
+                                          },
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(
+                                            Icons.delete,
+                                            color: Colors.redAccent,
+                                          ),
+                                          onPressed: () async {
+                                            final confirmed =
+                                                await showDialog<bool>(
+                                                  context: context,
+                                                  builder: (ctx) => AlertDialog(
+                                                    title: const Text(
+                                                      "Delete Expense?",
+                                                    ),
+                                                    content: const Text(
+                                                      "This action cannot be undone.",
+                                                    ),
+                                                    actions: [
+                                                      TextButton(
+                                                        onPressed: () =>
+                                                            Navigator.pop(
+                                                              ctx,
+                                                              false,
+                                                            ),
+                                                        child: const Text(
+                                                          "Cancel",
+                                                        ),
+                                                      ),
+                                                      TextButton(
+                                                        onPressed: () =>
+                                                            Navigator.pop(
+                                                              ctx,
+                                                              true,
+                                                            ),
+                                                        child: const Text(
+                                                          "Delete",
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                );
+                                            if (confirmed ?? false) {
+                                              final deletedCopy = e.copyWith();
+                                              await e.delete();
+                                              if (mounted) {
+                                                ScaffoldMessenger.of(
+                                                  context,
+                                                ).hideCurrentSnackBar();
+                                                ScaffoldMessenger.of(
+                                                  context,
+                                                ).showSnackBar(
+                                                  SnackBar(
+                                                    content: const Text(
+                                                      'Expense deleted',
+                                                    ),
+                                                    action: SnackBarAction(
+                                                      label: 'UNDO',
+                                                      onPressed: () async {
+                                                        final box =
+                                                            Hive.box<Expense>(
+                                                              'expenses_box',
+                                                            );
+                                                        await box.add(
+                                                          deletedCopy,
+                                                        );
+                                                        setState(() {});
+                                                      },
+                                                    ),
+                                                    duration: const Duration(
+                                                      seconds: 4,
+                                                    ),
+                                                  ),
+                                                );
+                                              }
+                                            }
+                                          },
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
@@ -1360,89 +1582,33 @@ class _MonthlyPageState extends State<MonthlyPage> {
                       ),
 
                     if (visibleEarnings.isNotEmpty)
-                      ListView.builder(
+                      ReorderableListView.builder(
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
+                        buildDefaultDragHandles: false,
                         itemCount: visibleEarnings.length,
+                        onReorder: (oldIndex, newIndex) {
+                          setState(() {
+                            if (newIndex > oldIndex) newIndex -= 1;
+                            final item = visibleEarnings.removeAt(oldIndex);
+                            visibleEarnings.insert(newIndex, item);
+                          });
+
+                          // Save the new order (Hive)
+                          for (int i = 0; i < visibleEarnings.length; i++) {
+                            final e = visibleEarnings[i];
+                            e.sortIndex = i;
+                            e.save();
+                          }
+                        },
                         itemBuilder: (ctx, i) {
                           final ent = visibleEarnings[i];
 
-                          return Dismissible(
+                          return ReorderableDelayedDragStartListener(
                             key: Key(
                               'earning_${ent.id}_${ent.date.millisecondsSinceEpoch}',
                             ),
-                            background: Container(
-                              color: Colors.green,
-                              alignment: Alignment.centerLeft,
-                              padding: const EdgeInsets.only(left: 20),
-                              child: const Icon(
-                                Icons.edit,
-                                color: Colors.white,
-                              ),
-                            ),
-                            secondaryBackground: Container(
-                              color: Colors.red,
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 20),
-                              child: const Icon(
-                                Icons.delete,
-                                color: Colors.white,
-                              ),
-                            ),
-                            confirmDismiss: (direction) async {
-                              if (direction == DismissDirection.startToEnd) {
-                                openAddEditSheet(earning: ent, isEarning: true);
-                                return false;
-                              } else {
-                                final shouldDelete = await showDialog<bool>(
-                                  context: context,
-                                  builder: (ctx) => AlertDialog(
-                                    title: const Text("Delete Earning?"),
-                                    content: const Text(
-                                      "Do you want to delete this earning?",
-                                    ),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () =>
-                                            Navigator.pop(ctx, false),
-                                        child: const Text("Cancel"),
-                                      ),
-                                      TextButton(
-                                        onPressed: () =>
-                                            Navigator.pop(ctx, true),
-                                        child: const Text("Delete"),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                                return shouldDelete ?? false;
-                              }
-                            },
-                            onDismissed: (direction) async {
-                              final deletedCopy = ent.copyWith();
-                              await ent.delete();
-                              if (mounted) {
-                                ScaffoldMessenger.of(
-                                  context,
-                                ).hideCurrentSnackBar();
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: const Text('Earning deleted'),
-                                    action: SnackBarAction(
-                                      label: 'UNDO',
-                                      onPressed: () async {
-                                        final box = Hive.box<Earning>(
-                                          'earnings_box',
-                                        );
-                                        await box.add(deletedCopy);
-                                        setState(() {});
-                                      },
-                                    ),
-                                    duration: const Duration(seconds: 4),
-                                  ),
-                                );
-                              }
-                            },
+                            index: i,
                             child: Card(
                               margin: const EdgeInsets.symmetric(
                                 horizontal: 12,
